@@ -118,7 +118,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arizona-launcher"
+name = "ven-states-launcher"
 version = "2.0.0-beta"
 dependencies = [
  "anyhow",
