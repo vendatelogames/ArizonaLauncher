@@ -4,6 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager, State};
 
+// Fixed VEN-STATES RP server endpoint.
+const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
+const VEN_STATES_SERVER_PORT: u16 = 3302;
+
+
 // ==================== Config Commands ====================
 
 #[tauri::command(async)]
@@ -902,9 +907,6 @@ fn quick_game_check(game_dir: &std::path::Path) -> Vec<String> {
 }
 
 #[tauri::command]
-const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
-const VEN_STATES_SERVER_PORT: u16 = 3302;
-
 pub async fn start_game(
     state: State<'_, AppState>,
     nickname: String,
