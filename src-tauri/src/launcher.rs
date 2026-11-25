@@ -500,20 +500,8 @@ pub async fn select_game_path(
 
 /// Python `get_launcher_version`: v8 > v7 > v6 среди exe в папке игры
 /// (по ресурсу версии, не по имени файла), иначе v8.
-fn detect_launcher_version(state: &AppState) -> String {
-    let Some(game_dir) = util::game_dir(state) else {
-        return "v8".to_string();
-    };
-    let plugins_dir = game_dir.join("preloading_plugins");
-    let has_plugins = std::fs::read_dir(&plugins_dir)
-        .map(|mut rd| rd.next().is_some())
-        .unwrap_or(false);
-    if has_plugins {
-        if let Some((_, major)) = find_launcher_exe(&game_dir) {
-            return major_to_version(major).to_string();
-        }
-    }
-    "v8".to_string()
+fn detect_launcher_version(_state: &AppState) -> String {
+    "VEN-STATES".to_string()
 }
 
 /// Python `kill_all_launchers`: убивает точные имена exe (не substring — чтобы не убить себя).
@@ -698,10 +686,10 @@ fn cdn_auto_enabled(state: &State<'_, AppState>) -> bool {
 /// Ручная проверка зеркал из настроек (кнопка «Проверить» рядом с «Авто»).
 #[tauri::command]
 pub async fn get_cdn_auto(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let cdn = resolve_cdn_auto(&state).await;
-    Ok(serde_json::json!({"success": true, "cdn": cdn}))
+    // Сохраняем IPC-контракт настроек, но не обращаемся к инфраструктуре Arizona.
+    Ok(serde_json::json!({"success": true, "cdn": "0,0,0", "supported": false}))
 }
 
 /// Паритет с оригиналом (03 §1, 04 §1): при запуске игры пишем ник и память
@@ -732,7 +720,6 @@ fn build_launch_args(
     nick: &str,
     params: &crate::config::LaunchParams,
 ) -> Vec<String> {
-    let cdn_value = validate_cdn(&params.cdn);
     let mut cmd: Vec<String> = vec![
         "-c".to_string(),
         "-h".to_string(),
@@ -744,11 +731,7 @@ fn build_launch_args(
         "-n".to_string(),
         nick.to_string(),
     ];
-    if native {
-        cmd.push("-cdn".to_string());
-        cmd.push(cdn_value.clone());
-    }
-    // Общие параметры графики и управления; Arizona project marker is omitted.
+native -cdn    // Общие параметры графики и управления; Arizona project marker is omitted.
     let common_flags: [(&bool, &str); 8] = [
         (&params.widescreen, "-widescreen"),
         (&params.texture_mode, "-t"),
@@ -789,11 +772,7 @@ fn build_launch_args(
         }
     }
 
-    if !native {
-        cmd.push("-cdn".to_string());
-        cmd.push(cdn_value);
-    }
-    cmd
+air -cdn    cmd
 }
 
 #[cfg(test)]
@@ -857,7 +836,7 @@ mod launch_tests {
             got,
             vec![
                 "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-cdn", "1,1,1", "-x", "-window"
+                "-x", "-window"
             ]
         );
     }
@@ -871,29 +850,17 @@ mod launch_tests {
             got,
             vec![
                 "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-x", "-window", "-cdn", "1,1,1"
+                "-x", "-window"
             ]
         );
     }
 }
 
-/// Быстрый чек ключевых файлов перед запуском (пункт 3 плана):
-/// только наличие и ненулевой размер — без MD5, миллисекунды.
-/// Список покрывает ядро установки по манифесту CDN (exe, крупные .img,
-/// SAMP, фронтенд): частично скачанная или порушенная папка поймается.
-/// Возвращает относительные пути отсутствующих файлов.
+/// Проверяем только обязательный исполняемый файл GTA SA.
+/// Набор дополнительных файлов зависит от конкретной сборки VEN-STATES
+/// и будет проверяться собственным манифестом, когда подключим CDN проекта.
 fn quick_game_check(game_dir: &std::path::Path) -> Vec<String> {
-    const CRITICAL: &[&str] = &[
-        "gta_sa.exe",
-        "arizona.asi",
-        "anim/cuts.img",
-        "models/gta3.img",
-        "models/peds.img",
-        "models/vehs_7.img",
-        "SAMP/SAMP.img",
-        "frontend.zip",
-        "data/script/script.img",
-    ];
+    const CRITICAL: &[&str] = &["gta_sa.exe"];
     CRITICAL
         .iter()
         .filter(|rel| {
@@ -962,18 +929,11 @@ pub async fn start_game(
         None => util::lock_config(&state)?.launch_params.clone(),
     };
 
-    // Авто-CDN: зеркала пингуются сами (кэш 10 мин), пользователь не выбирает
-    if cdn_auto_enabled(&state) {
-        params.cdn = resolve_cdn_auto(&state).await;
-    }
-
+    // VEN-STATES не использует CDN-маршрутизацию Arizona.
     let launcher_ver = detect_launcher_version(&state);
     // При нативном запуске поддержка только v8 → все доп. флаги без проверок
     let is_v7plus = native || launcher_ver == "v7" || launcher_ver == "v8";
     let cmd = build_launch_args(native, is_v7plus, &srv_ip, &srv_port, &nickname, &params);
-
-    // kill_all_launchers перед стартом (в Python — синхронно с sleep 1s)
-    tokio::task::spawn_blocking(kill_all_launchers).await.ok();
 
     let (exe, cwd) = if native {
         // Реестр — паритет с оригиналом (03 §1, 04): SA-MP читает оттуда ник
