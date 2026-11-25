@@ -11,7 +11,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ven-states/**"]
     tags: ['v*', 'nightly-*']
   workflow_dispatch:
 
@@ -203,7 +203,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             throw "Release $env:TAG_NAME уже существует; запрещена тихая замена установщика и hash"
           }
-          $title = "Arizona RP Launcher $env:TAG_NAME"
+          $title = "VEN-STATES Launcher $env:TAG_NAME"
           gh release create "$env:TAG_NAME" `
             "$($setup.FullName)" `
             "out/SHA256SUMS.txt" `
