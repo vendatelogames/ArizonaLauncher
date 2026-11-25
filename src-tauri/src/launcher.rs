@@ -4777,6 +4777,19 @@ fn game_update_limit(state: &AppState) -> u64 {
     }
 }
 
+/// Собственные CDN VEN-STATES. Ключи хранятся в launcher_settings.extra,
+/// чтобы адреса загрузки можно было сменить без перекомпиляции лаунчера.
+fn ven_states_game_cdns(state: &AppState) -> (String, String) {
+    state.config.lock().ok().map(|cfg| {
+        let extra = &cfg.launcher_settings.extra;
+        let main = extra.get("ven_states_cdn_main")
+            .and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let reserve = extra.get("ven_states_cdn_reserve")
+            .and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        (main, reserve)
+    }).unwrap_or_default()
+}
+
 /// canonicalize без verbatim-префикса `\\?\` (и `\\?\UNC\`): canonicalize на
 /// Windows возвращает именно его, а такие пути ломают explorer/open и режут
 /// глаз в конфиге/логах. Используется для путей, попадающих в config.json
@@ -4896,11 +4909,20 @@ pub async fn check_update_api(
     let target = resolve_game_target(&gp)
         .ok_or_else(|| "game_path не установлен".to_string())?;
     let documents = state.documents_path.clone();
+    let (cdn_main, cdn_reserve) = ven_states_game_cdns(&state);
+    if cdn_main.is_empty() {
+        return Ok(serde_json::json!({
+            "success": true,
+            "needs_update": false,
+            "updater_configured": false,
+            "message": "Обновления VEN-STATES пока не настроены. Arizona CDN отключён; кэш загрузок сохранён."
+        }));
+    }
 
     let job = Job {
         mode: Mode::Check,
-        cdn_main: engine::DEFAULT_CDN_MAIN.into(),
-        cdn_reserve: engine::DEFAULT_CDN_RESERVE.into(),
+        cdn_main,
+        cdn_reserve,
         target,
         // Вариант графики: ручной переключатель из настроек.
         future: game_update_future(&state),
@@ -4985,12 +5007,19 @@ fn spawn_game_job(
             "message": "Игра запущена — закрой её перед установкой/обновлением"
         }));
     }
+    let (cdn_main, cdn_reserve) = ven_states_game_cdns(state);
+    if cdn_main.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "CDN VEN-STATES не настроен. Укажи основной URL с game.json и папкой game/. Arizona CDN не используется."
+        }));
+    }
     let (cancel, pause) = claim_game_job(state)?;
 
     let job = Job {
         mode,
-        cdn_main: engine::DEFAULT_CDN_MAIN.into(),
-        cdn_reserve: engine::DEFAULT_CDN_RESERVE.into(),
+        cdn_main,
+        cdn_reserve,
         target: target.clone(),
         future,
         documents: state.documents_path.clone(),
