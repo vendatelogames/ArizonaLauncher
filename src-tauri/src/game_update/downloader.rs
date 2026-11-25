@@ -71,6 +71,9 @@ pub async fn fetch_manifest(
         }
         Err(e) => log(format!("Основной CDN не ответил ({main}): {e:#}")),
     }
+    if reserve.trim().is_empty() {
+        bail!("основной VEN-STATES CDN не ответил, резервный CDN не настроен");
+    }
     let reserve_res = try_manifest(http, reserve).await;
     if cancel.load(Ordering::Relaxed) {
         bail!("отменено пользователем");
