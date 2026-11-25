@@ -722,10 +722,8 @@ fn write_samp_registry(nickname: &str, mem_mb: u32) {
     }
 }
 
-/// Собирает аргументы запуска. База одинакова, хвост отличается
-/// (03 §3 — так командную строку получает игра от Air-ретранслятора):
-///   нативно:  ... -cdn <n,n,n> -arizona [доп. флаги]
-///   через Air: ... -arizona [доп. флаги] -cdn <n,n,n>  (порядок легаси worteng)
+/// Собирает аргументы запуска VEN-STATES. Маркер проекта Arizona намеренно
+/// не передаётся: этот лаунчер подключает игру к собственному серверу VEN-STATES.
 fn build_launch_args(
     native: bool,
     is_v7plus: bool,
@@ -750,9 +748,7 @@ fn build_launch_args(
         cmd.push("-cdn".to_string());
         cmd.push(cdn_value.clone());
     }
-    cmd.push("-arizona".to_string());
-
-    // Общие флаги для всех версий (v6/v7/v8)
+    // Общие параметры графики и управления; Arizona project marker is omitted.
     let common_flags: [(&bool, &str); 8] = [
         (&params.widescreen, "-widescreen"),
         (&params.texture_mode, "-t"),
@@ -861,7 +857,7 @@ mod launch_tests {
             got,
             vec![
                 "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-cdn", "1,1,1", "-arizona", "-x", "-window"
+                "-cdn", "1,1,1", "-x", "-window"
             ]
         );
     }
@@ -875,7 +871,7 @@ mod launch_tests {
             got,
             vec![
                 "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-arizona", "-x", "-window", "-cdn", "1,1,1"
+                "-x", "-window", "-cdn", "1,1,1"
             ]
         );
     }
