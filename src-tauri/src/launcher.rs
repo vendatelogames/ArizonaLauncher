@@ -550,145 +550,12 @@ fn sanitize_nickname(nick: &str) -> String {
     stripped.chars().take(20).collect()
 }
 
-/// Python: валидация CDN, формат `\d+,\d+,\d+`, иначе fallback "1,1,1".
-fn validate_cdn(raw: &str) -> String {
-    let re = match regex::Regex::new(r"^\d+,\d+,\d+$") {
-        Ok(r) => r,
-        Err(_) => return "1,1,1".to_string(),
-    };
-    if re.is_match(raw) {
-        raw.to_string()
-    } else {
-        log::warn!("launch_game: некорректный CDN '{}', использую '1,1,1'", raw);
-        "1,1,1".to_string()
-    }
-}
-
-// ==================== Авто-CDN (как в оригинальном лаунчере) ====================
-//
-// Пары зеркал [main, reserve] по трём группам; живость — GET <зеркало>/ping.json
-// с валидацией hash (handoff/original-launcher/02 §«Пинг зеркал»). Индексы уходят
-// в игру флагом `-cdn i,i,i`: 0 = main, 1 = reserve.
-
-const PING_HASH: &str = "5aa4731d5d84e09e2f7e7141e560104f";
-const CDN_AUTO_GROUPS: [&[&str]; 3] = [
-    // [контент]: main, reserve
-    &["https://cdn.azresources.cloud", "https://resources.azgames-cdn.ru"],
-    // [звук]
-    &["https://cdn.azsounds.net", "https://azgamesound-cdn.ru"],
-    // [серверное API]
-    &["https://server-api.arizona.games", "https://server-api.azgames-cdn.ru"],
-];
-const CDN_AUTO_TTL: std::time::Duration = std::time::Duration::from_secs(600); // 10 мин
-
-/// Живость зеркала: ping.json отвечает 200 и содержит наш hash.
-/// В ответе ~220 КБ болтовни (plug_text) — читаем целиком, лимит по таймауту.
-async fn ping_mirror(base: &str) -> bool {
-    let url = format!("{}/ping.json", base.trim_end_matches('/'));
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("ArizonaLauncher/2.0"),
-    );
-    let resp = match util::http_request(
-        reqwest::Method::GET,
-        &url,
-        headers,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    if resp.status() != reqwest::StatusCode::OK {
-        return false;
-    }
-    match resp.bytes().await {
-        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("hash")
-                    .and_then(|h| h.as_str())
-                    .map(|h| h == PING_HASH)
-            })
-            .unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
-/// Выбор индекса группы: main жив → "0", иначе reserve жив → "1",
-/// иначе "0" (фоллбэк оригинала —main, даже если пинг не прошёл).
-fn pick_cdn_index(main_alive: bool, reserve_alive: bool) -> &'static str {
-    if main_alive {
-        "0"
-    } else if reserve_alive {
-        "1"
-    } else {
-        "0"
-    }
-}
-
-/// Актуальное значение авто-CDN: кэш 10 мин, иначе пингуем все 6 зеркал
-/// параллельно (худший случай ~5 с). Кэш в AppState.cdn_auto_cache.
-async fn resolve_cdn_auto(state: &State<'_, AppState>) -> String {
-    if let Ok(cache) = state.cdn_auto_cache.lock() {
-        if let Some(c) = cache.as_ref() {
-            if c.ts.elapsed() < CDN_AUTO_TTL {
-                return c.value.clone();
-            }
-        }
-    }
-    let g = CDN_AUTO_GROUPS;
-    let (a0, a1, b0, b1, c0, c1) = tokio::join!(
-        ping_mirror(g[0][0]),
-        ping_mirror(g[0][1]),
-        ping_mirror(g[1][0]),
-        ping_mirror(g[1][1]),
-        ping_mirror(g[2][0]),
-        ping_mirror(g[2][1]),
-    );
-    let value = format!(
-        "{},{},{}",
-        pick_cdn_index(a0, a1),
-        pick_cdn_index(b0, b1),
-        pick_cdn_index(c0, c1)
-    );
-    log::info!(
-        "resolve_cdn_auto: {} (cdn main/reserve: {}/{} sound: {}/{} api: {}/{})",
-        value,
-        a0, a1, b0, b1, c0, c1
-    );
-    if let Ok(mut cache) = state.cdn_auto_cache.lock() {
-        *cache = Some(crate::config::CdnAutoCache {
-            ts: std::time::Instant::now(),
-            value: value.clone(),
-        });
-    }
-    value
-}
-
-/// Включён ли авто-CDN в настройках (launcher_settings.extra.cdn_auto).
-fn cdn_auto_enabled(state: &State<'_, AppState>) -> bool {
-    state
-        .config
-        .lock()
-        .ok()
-        .and_then(|c| {
-            c.launcher_settings
-                .extra
-                .get("cdn_auto")
-                .and_then(|v| v.as_bool())
-        })
-        .unwrap_or(false)
-}
-
-/// Ручная проверка зеркал из настроек (кнопка «Проверить» рядом с «Авто»).
+/// Проверка CDN-переключателя оставлена для совместимости фронта.
+/// Arizona CDN-пинги отключены; игровой запуск не использует -cdn.
 #[tauri::command]
 pub async fn get_cdn_auto(
     _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    // Сохраняем IPC-контракт настроек, но не обращаемся к инфраструктуре Arizona.
     Ok(serde_json::json!({"success": true, "cdn": "0,0,0", "supported": false}))
 }
 
@@ -7438,16 +7305,6 @@ mod patches_version_tests {
 #[cfg(test)]
 mod auto_cdn_news_tests {
     use super::*;
-
-    #[test]
-    fn pick_cdn_index_prefers_main_and_falls_back() {
-        assert_eq!(pick_cdn_index(true, true), "0");
-        assert_eq!(pick_cdn_index(true, false), "0");
-        // main мёртв, reserve жив — берём reserve
-        assert_eq!(pick_cdn_index(false, true), "1");
-        // оба мертвы — фоллбэк на main (как в оригинале)
-        assert_eq!(pick_cdn_index(false, false), "0");
-    }
 
     #[test]
     fn parse_arizona_projects_extracts_news() {
