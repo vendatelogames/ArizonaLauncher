@@ -519,67 +519,17 @@ fn write_samp_registry(nickname: &str, mem_mb: u32) {
 
 /// Собирает аргументы запуска VEN-STATES. Маркер проекта Arizona намеренно
 /// не передаётся: этот лаунчер подключает игру к собственному серверу VEN-STATES.
-fn build_launch_args(
-    native: bool,
-    is_v7plus: bool,
-    srv_ip: &str,
-    srv_port: &str,
-    nick: &str,
-    params: &crate::config::LaunchParams,
-) -> Vec<String> {
-    let mut cmd: Vec<String> = vec![
+/// Стандартные аргументы SA-MP 0.3.7. Не передаём параметры Arizona Air.
+fn build_launch_args(srv_ip: &str, srv_port: &str, nick: &str) -> Vec<String> {
+    vec![
         "-c".to_string(),
         "-h".to_string(),
         srv_ip.to_string(),
         "-p".to_string(),
         srv_port.to_string(),
-        "-mem".to_string(),
-        params.memory.to_string(),
         "-n".to_string(),
         nick.to_string(),
-    ];
-native -cdn    // Общие параметры графики и управления; Arizona project marker is omitted.
-    let common_flags: [(&bool, &str); 8] = [
-        (&params.widescreen, "-widescreen"),
-        (&params.texture_mode, "-t"),
-        (&params.color_depth_16, "-16bpp"),
-        (&params.allow_hdr, "-allow_hdr"),
-        (&params.enable_grass, "-enable_grass"),
-        (&params.ldo, "-ldo"),
-        (&params.auth_cef_enable, "-auth_cef_enable"),
-        (&params.autologin, "-x"),
-    ];
-    for (flag_on, name) in &common_flags {
-        if **flag_on {
-            cmd.push(name.to_string());
-        }
-    }
-
-    // Оконный режим: -window и -old_window взаимоисключающие
-    if is_v7plus && params.old_window {
-        cmd.push("-old_window".to_string());
-    } else if params.window_mode {
-        cmd.push("-window".to_string());
-    }
-
-    // Доп. флаги v7+
-    if is_v7plus {
-        let v7plus_flags: [(&bool, &str); 6] = [
-            (&params.enable_new_grass, "-enable_new_grass"),
-            (&params.use_d3dx9_43, "-use_d3dx9_43"),
-            (&params.show_dialog_ids, "-show_dialog_ids"),
-            (&params.offcef, "-offcef"),
-            (&params.modern_scale, "-modern_scale"),
-            (&params.trees_new, "-trees_new"),
-        ];
-        for (flag_on, name) in &v7plus_flags {
-            if **flag_on {
-                cmd.push(name.to_string());
-            }
-        }
-    }
-
-air -cdn    cmd
+    ]
 }
 
 #[cfg(test)]
@@ -633,33 +583,11 @@ mod config_deadlock_tests {
 mod launch_tests {
     use super::*;
 
-    /// Дефолтные параметры: autologin → "-x", window_mode → "-window".
     #[test]
-    fn native_args_order() {
-        let p = crate::config::LaunchParams::default();
-        let args = build_launch_args(true, true, "host.example", "7777", "Nick", &p);
+    fn samp_037_args_are_only_standard_connection_arguments() {
+        let args = build_launch_args("188.127.241.74", "3302", "Nick");
         let got: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            got,
-            vec![
-                "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-x", "-window"
-            ]
-        );
-    }
-
-    #[test]
-    fn air_args_order() {
-        let p = crate::config::LaunchParams::default();
-        let args = build_launch_args(false, true, "host.example", "7777", "Nick", &p);
-        let got: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            got,
-            vec![
-                "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-x", "-window"
-            ]
-        );
+        assert_eq!(got, vec!["-c", "-h", "188.127.241.74", "-p", "3302", "-n", "Nick"]);
     }
 }
 
@@ -737,10 +665,7 @@ pub async fn start_game(
     };
 
     // VEN-STATES не использует CDN-маршрутизацию Arizona.
-    let launcher_ver = detect_launcher_version(&state);
-    // При нативном запуске поддержка только v8 → все доп. флаги без проверок
-    let is_v7plus = native || launcher_ver == "v7" || launcher_ver == "v8";
-    let cmd = build_launch_args(native, is_v7plus, &srv_ip, &srv_port, &nickname, &params);
+    let cmd = build_launch_args(&srv_ip, &srv_port, &nickname);
 
     let (exe, cwd) = if native {
         // Реестр — паритет с оригиналом (03 §1, 04): SA-MP читает оттуда ник
