@@ -1273,10 +1273,6 @@ pub fn save_read_news_ids(state: State<'_, AppState>, ids: Vec<String>) -> Resul
 // ревалидация не чаще 30 мин (новости меняются редко).
 
 const ARIZONA_NEWS_TTL_MS: u128 = 30 * 60 * 1000;
-const ARIZONA_NEWS_URLS: [&str; 2] = [
-    "https://api.arizona-five.com/",
-    "https://arz-api-reserve.s-amp.com/",
-];
 
 /// Достать новости проекта arizona из ответа launcher/projects.
 fn parse_arizona_projects(body: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
@@ -1360,10 +1356,6 @@ pub async fn get_arizona_news(
 // состояние — config.installed_arizona_mods (отдельное поле: фронтовые
 // save_launcher_settings затирают extra целиком).
 
-const ARIZONA_MODS_URLS: [&str; 2] = [
-    "https://api-samp.arizona-five.com/launcher/mods/arizona",
-    "https://arz-api-reserve.s-amp.com/launcher/mods/arizona",
-];
 const ARIZONA_MODS_TTL_MS: u128 = 30 * 60 * 1000;
 const ARIZONA_MOD_MAX_FILE: u64 = 64 * 1024 * 1024; // 64 МБ на файл
 const ARIZONA_MOD_TOTAL_MAX: u64 = 512 * 1024 * 1024; // 512 МБ на мод
