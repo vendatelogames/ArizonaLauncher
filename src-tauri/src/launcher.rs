@@ -2239,79 +2239,16 @@ pub fn get_launcher_version(state: State<'_, AppState>) -> Result<serde_json::Va
     Ok(serde_json::json!({"success": true, "version": detect_launcher_version(&state)}))
 }
 
-/// Проверка обновления лаунчера (Python check_launcher_update): сравнивает
-/// состояние папки игры с требуемым и сообщает, нужна ли установка/апгрейд.
+/// VEN-STATES запускает GTA SA напрямую. Проверка версии стороннего Air-лаунчера
+/// отключена: она не должна блокировать запуск или показывать ложное обновление.
 #[tauri::command(async)]
-pub fn check_launcher_update(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let (game_path, launcher_path, launch_method) = {
-        let cfg = util::lock_config(&state)?;
-        (
-            cfg.game_path.clone(),
-            cfg.launcher_path.clone(),
-            cfg.launch_method.clone(),
-        )
-    };
-    // Нативный запуск не использует Air — установка/обновление не требуется.
-    // Раньше проверка была чисто файловой и показывала «Обновить» даже тем,
-    // кому Air не нужен.
-    if launch_method != "air" {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Нативный запуск — лаунчер Air не требуется",
-            "folder": serde_json::Value::Null
-        }));
-    }
-    if game_path.is_empty() || launcher_path.is_empty() {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Путь к игре не настроен", "folder": serde_json::Value::Null
-        }));
-    }
-    let Some(folder_path) = std::path::Path::new(&game_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-    else {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Путь к игре не настроен", "folder": serde_json::Value::Null
-        }));
-    };
-    let info = match install_action_for_folder(&folder_path) {
-        Ok(v) => v,
-        Err(e) => return Ok(serde_json::json!({"success": false, "needs_update": false, "message": e})),
-    };
-    let action = info.get("action").and_then(|a| a.as_str()).unwrap_or("none");
-    if action == "none" {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Лаунчер v8 уже установлен", "folder": folder_path
-        }));
-    }
-    let launcher_version = info
-        .get("launcher_version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let message = match action {
-        "choose_version" | "install_launcher_only" => "Требуется установка лаунчера v8",
-        "install_preloading_only" => "Требуется установка патчей",
-        "upgrade_to_v8" => return Ok(serde_json::json!({
-            "success": true, "needs_update": true,
-            "message": format!("Доступно обновление v{launcher_version} → v8"),
-            "folder": folder_path, "action": action
-        })),
-        // gta_sa.exe не найден — это не «обновление», а неверная папка
-        "error" => {
-            let m = info.get("message").and_then(|v| v.as_str()).unwrap_or("Папка игры не найдена");
-            return Ok(serde_json::json!({
-                "success": true, "needs_update": false,
-                "message": m, "folder": folder_path, "action": action
-            }));
-        }
-        _ => "Доступно обновление",
-    };
+pub fn check_launcher_update(_state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
-        "success": true, "needs_update": true,
-        "message": message, "folder": folder_path, "action": action
+        "success": true,
+        "needs_update": false,
+        "message": "VEN-STATES Launcher: отдельный Air-лаунчер не требуется",
+        "folder": serde_json::Value::Null,
+        "launcher": "VEN-STATES"
     }))
 }
 
@@ -2405,20 +2342,14 @@ fn install_action_for_folder(folder_path: &str) -> Result<serde_json::Value, Str
     }))
 }
 
-/// Команда для фронта: какое действие по установке требуется с учётом
-/// способа запуска. При нативном запуске лаунчер Air и preloading не нужны —
-/// всегда 'none', чтобы не пилить «Установить» без причины.
+/// Команда для фронта: VEN-STATES не требует установки стороннего Air-лаунчера.
 #[tauri::command(async)]
-pub fn get_install_action(state: State<'_, AppState>, folder_path: String) -> Result<serde_json::Value, String> {
-    let method = { util::lock_config(&state)?.launch_method.clone() };
-    if method != "air" {
-        return Ok(serde_json::json!({
-            "action": "none",
-            "message": "Нативный запуск — лаунчер Air не требуется",
-            "launch_method": "native"
-        }));
-    }
-    install_action_for_folder(&folder_path)
+pub fn get_install_action(_state: State<'_, AppState>, _folder_path: String) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "action": "none",
+        "message": "VEN-STATES запускает GTA SA напрямую; сторонний лаунчер не требуется",
+        "launch_method": "native"
+    }))
 }
 
 /// API-обёртка для JS: {success, install_info} (как в Python get_install_action_api)
@@ -5771,64 +5702,19 @@ async fn launcher_install_run(
 
 #[tauri::command]
 pub async fn start_launcher_install(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    folder_path: String,
-    version: Option<String>,
-    install_type: Option<String>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
+    _folder_path: String,
+    _version: Option<String>,
+    _install_type: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let _job = match HeavyJobGuard::try_acquire(&state.heavy_job_busy) {
-        Ok(g) => g,
-        Err(e) => return util::fail_message(e),
-    };
-    let version = version.unwrap_or_else(|| "v8".to_string());
-    if version != "v8" {
-        return util::fail_message(format!("Поддерживается только версия v8 (получена: {version})"));
-    }
-    let install_type = install_type.unwrap_or_else(|| "choose_version".to_string());
-    const VALID_TYPES: [&str; 4] = [
-        "choose_version",
-        "install_launcher_only",
-        "install_preloading_only",
-        "upgrade_to_v8",
-    ];
-    if !VALID_TYPES.contains(&install_type.as_str()) {
-        return util::fail_message(format!("Установка не требуется (action: {install_type})"));
-    }
-
-    let folder = std::path::Path::new(&folder_path);
-    if !folder.is_dir() {
-        return util::fail_message("Папка игры не найдена");
-    }
-    // Папка обязана быть папкой игры: без gta_sa.exe ставить лаунчер некуда.
-    // Раньше action "error" от install_action_for_folder не прерывал установку
-    // (abort только на "none") — веб-вызов мог развернуть архив в любую папку.
-    if !folder.join("gta_sa.exe").exists() {
-        return util::fail_message("gta_sa.exe не найден — укажите папку с игрой");
-    }
-    // Дополнительная проверка: нужная версия уже стоит — не качаем
-    // (чисто файловая проверка: установку вызывают явно, метод не важен)
-    if let Ok(info) = install_action_for_folder(&folder_path) {
-        if info["action"] == "none" {
-            let msg = info["message"].as_str().unwrap_or("Лаунчер уже установлен");
-            return util::fail_message(msg);
-        }
-    }
-
-    log::info!("start_launcher_install: folder={folder_path} version={version} type={install_type}");
-    match launcher_install_run(&app, &state, &folder_path, &install_type).await {
-        Ok(()) => {
-            emit_install_progress(&app, "done", 100, "Установка завершена");
-            log::info!("start_launcher_install: УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО ({folder_path})");
-            util::ok_true()
-        }
-        Err(e) => {
-            log::error!("start_launcher_install: {e}");
-            emit_install_progress(&app, "error", 0, &e);
-            util::fail_message(e)
-        }
-    }
+    Ok(serde_json::json!({
+        "success": false,
+        "message": "Установка Arizona Air отключена. VEN-STATES использует прямой запуск GTA SA."
+    }))
 }
+
+// ==================== Moonloader ====================
 
 // ==================== Moonloader ====================
 
