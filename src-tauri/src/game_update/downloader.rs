@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 
 use super::manifest::Root;
 
-const UA: &str = "ArizonaLauncher/2.0";
+const UA: &str = "VEN-STATES-Launcher/1.0";
 
 /// Сколько готовы ждать один чанк ответа («залипшее» соединение).
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
