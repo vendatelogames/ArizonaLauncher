@@ -338,9 +338,11 @@ pub async fn auto_detect_paths(state: State<'_, AppState>) -> Result<serde_json:
     if let Some((game, launcher)) = &found {
         util::update_config(&state, |cfg| {
             cfg.game_path = game.to_string_lossy().to_string();
+            cfg.launcher_path.clear();
             if let Some(l) = launcher {
                 cfg.launcher_path = l.to_string_lossy().to_string();
             }
+            cfg.launch_method = "native".to_string();
             Ok(())
         })?;
         state.save_config()?;
