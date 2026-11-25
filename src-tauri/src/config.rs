@@ -306,6 +306,8 @@ impl AppState {
         let mut config = Self::load_config(&config_path);
         // This launcher has one fixed server; do not restore an Arizona server number.
         config.last_server = 1;
+        // VEN-STATES never uses the outdated Arizona Air launcher.
+        config.launch_method = "native".to_string();
         // Миграция: конфиг мог хранить base64-обоев целиком (~2.8 МБ).
         // Файл лежит в wallpapers/ — копия в конфиге не нужна (см.
         // launcher::bg_data_is_redundant).
