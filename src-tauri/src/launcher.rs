@@ -185,11 +185,14 @@ pub fn get_launch_method(state: State<'_, AppState>) -> Result<serde_json::Value
 
 #[tauri::command]
 pub fn set_launch_method(state: State<'_, AppState>, method: String) -> Result<serde_json::Value, String> {
-    if method != "native" && method != "air" {
-        return Ok(serde_json::json!({"success": false, "message": format!("Неизвестный способ запуска: {method}")}));
+    if method != "native" {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "Для VEN-STATES доступен только прямой запуск gta_sa.exe"
+        }));
     }
     util::update_config(&state, |cfg| {
-        cfg.launch_method = method.clone();
+        cfg.launch_method = "native".to_string();
         Ok(())
     })
 }
@@ -914,16 +917,12 @@ pub async fn start_game(
     launch_params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     // Валидации (порядок как в Python)
-    let (launcher_path, game_path, launch_method) = {
+    let (launcher_path, game_path) = {
         let cfg = util::lock_config(&state)?;
-        (
-            cfg.launcher_path.clone(),
-            cfg.game_path.clone(),
-            cfg.launch_method.clone(),
-        )
+        (cfg.launcher_path.clone(), cfg.game_path.clone())
     };
-    // "native" — запускаем gta_sa.exe напрямую; "air" — через ArizonaLauncher*.exe
-    let native = launch_method != "air";
+    // VEN-STATES always starts gta_sa.exe directly, never ArizonaLauncher*.exe.
+    let native = true;
     if !native && (launcher_path.is_empty() || !std::path::Path::new(&launcher_path).exists()) {
         return Ok(serde_json::json!({"success": false, "message": "Launcher not found", "code": "LAUNCHER_MISSING"}));
     }
@@ -5207,7 +5206,7 @@ fn spawn_game_job(
                     match &launcher {
                         Some((lp, _)) => {
                             cfg.launcher_path = lp.to_string_lossy().to_string();
-                            cfg.launch_method = "air".to_string();
+                            cfg.launch_method = "native".to_string();
                         }
                         None => {
                             cfg.launcher_path = String::new();
@@ -5219,7 +5218,7 @@ fn spawn_game_job(
                     Ok(_) => log::info!(
                         "game_update: game_path → {p}; launcher: {}; method: {}",
                         launcher.as_ref().map(|(lp, _)| lp.display().to_string()).unwrap_or_else(|| "не найден".into()),
-                        if launcher.is_some() { "air" } else { "native" }
+                        "native"
                     ),
                     Err(e) => log::warn!("game_update: не удалось записать game_path в конфиг: {e}"),
                 }
