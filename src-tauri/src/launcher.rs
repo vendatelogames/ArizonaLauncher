@@ -1123,19 +1123,11 @@ async fn fetch_servers_sw(_app: &tauri::AppHandle, state: &AppState) -> serde_js
 
 /// stale-while-revalidate для новостей: диск → сразу + фоновое обновление,
 /// иначе — сеть (первый запуск).
-async fn fetch_news_sw(app: &tauri::AppHandle, state: &AppState) -> serde_json::Value {
-    if let Some(text) = read_disk_news(state) {
-        spawn_news_revalidate(app);
-        log::info!("news: дисковый кэш отдан мгновенно ({} байт)", text.len());
-        return serde_json::json!({"success": true, "text": text});
-    }
-    let r = fetch_launcher_news().await;
-    if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-        if let Some(text) = r.get("text").and_then(|v| v.as_str()) {
-            write_disk_news(state, text);
-        }
-    }
-    r
+async fn fetch_news_sw(_app: &tauri::AppHandle, _state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "text": "VEN-STATES RP\nСервер: 188.127.241.74:3302"
+    })
 }
 
 /// Тело `get_servers`: кэш 60s, ETag/If-Modified-Since, 304 → кэш, нормализация, prefetch.
@@ -1314,39 +1306,6 @@ fn parse_arizona_projects(body: &serde_json::Value) -> Option<Vec<serde_json::Va
 
 /// Сеть: launcher/projects с main → при пустом/битом ответе Reserve.
 async fn fetch_arizona_news_network() -> Option<Vec<serde_json::Value>> {
-    for base in ARIZONA_NEWS_URLS {
-        let url = format!("{base}launcher/projects");
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-        );
-        let resp = match util::http_request(
-            reqwest::Method::GET,
-            &url,
-            headers,
-            std::time::Duration::from_secs(20),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if resp.status() != reqwest::StatusCode::OK {
-            continue;
-        }
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let body: serde_json::Value = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Some(news) = parse_arizona_projects(&body) {
-            return Some(news);
-        }
-    }
     None
 }
 
@@ -1386,28 +1345,10 @@ fn spawn_arizona_news_revalidate(app: &tauri::AppHandle) {
 /// кэше — сеть синхронно.
 #[tauri::command]
 pub async fn get_arizona_news(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(v) = read_cache_file(&state, "arizona_news.json") {
-        if let Some(news) = v.get("news").cloned() {
-            spawn_arizona_news_revalidate(&app);
-            return Ok(serde_json::json!({"success": true, "news": news}));
-        }
-    }
-    match fetch_arizona_news_network().await {
-        Some(news) => {
-            write_cache_file(
-                &state,
-                "arizona_news.json",
-                &serde_json::json!({"ts_ms": now_ms(), "news": news}),
-            );
-            Ok(serde_json::json!({"success": true, "news": news}))
-        }
-        None => util::fail_message(
-            "Не удалось загрузить новости Arizona RP (проверьте интернет)".to_string(),
-        ),
-    }
+    Ok(serde_json::json!({"success": true, "news": []}))
 }
 
 // ==================== Каталог модов из оригинального лаунчера Аризоны ====================
@@ -1534,56 +1475,6 @@ async fn download_mod_file(url_main: String, url_reserve: String, expected: &str
 
 /// Сеть: каталог модов (main → reserve), слитый {topOfMonth + mods} дедупом по id.
 async fn fetch_arizona_mods_network() -> Option<serde_json::Value> {
-    for base in ["https://api-samp.arizona-five.com/launcher/mods", "https://arz-api-reserve.s-amp.com/launcher/mods"] {
-        let url = format!("{base}/arizona");
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-        );
-        let resp = match util::http_request(
-            reqwest::Method::GET,
-            &url,
-            headers,
-            std::time::Duration::from_secs(20),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if resp.status() != reqwest::StatusCode::OK {
-            continue;
-        }
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let body: serde_json::Value = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let top = body.get("topOfMonth").cloned().unwrap_or(serde_json::Value::Null);
-        let mods = body.get("mods").cloned().unwrap_or(serde_json::Value::Null);
-        if top.is_null() && mods.is_null() {
-            continue;
-        }
-        // Слить, дедуп по id (topOfMonth частично дублирует mods)
-        let mut seen = std::collections::HashSet::new();
-        let mut all = Vec::new();
-        for item in [&top, &mods] {
-            if let Some(arr) = item.as_array() {
-                for m in arr {
-                    if let Some(id) = m.get("id").and_then(|v| v.as_i64()) {
-                        if seen.insert(id) {
-                            all.push(m.clone());
-                        }
-                    }
-                }
-            }
-        }
-        return Some(serde_json::Value::Array(all));
-    }
     None
 }
 
@@ -1679,31 +1570,10 @@ pub fn check_moonloader(state: State<'_, AppState>) -> Result<serde_json::Value,
 /// Каталог модов Аризоны: диск мгновенно (+ фоновая ревалидация), пусто — сеть.
 #[tauri::command]
 pub async fn get_arizona_mods(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(v) = read_cache_file(&state, "arizona_mods.json") {
-        // Только массив: битая форма (объект после правки формата) = стейл
-        if let Some(mods) = v.get("mods").cloned() {
-            if mods.is_array() {
-                spawn_arizona_mods_revalidate(&app);
-                return Ok(serde_json::json!({"success": true, "mods": mods}));
-            }
-        }
-    }
-    match fetch_arizona_mods_network().await {
-        Some(mods) => {
-            write_cache_file(
-                &state,
-                "arizona_mods.json",
-                &serde_json::json!({"ts_ms": now_ms(), "mods": mods}),
-            );
-            Ok(serde_json::json!({"success": true, "mods": mods}))
-        }
-        None => util::fail_message(
-            "Не удалось загрузить каталог модов Аризоны (проверьте интернет)".to_string(),
-        ),
-    }
+    Ok(serde_json::json!({"success": true, "mods": []}))
 }
 
 /// Установленные моды Аризоны (для рендера состояния на фронте).
@@ -1719,31 +1589,8 @@ static AZ_MOD_TREE_CACHE: std::sync::Mutex<Option<std::collections::HashMap<Stri
     std::sync::Mutex::new(None);
 
 /// Дерево мода из сети → плоское дерево с валидацией путей.
-async fn fetch_mod_tree(mod_id: i64) -> Result<Vec<(String, String, u64, i64)>, String> {
-    let json_url = format!("https://api-samp.arizona-five.com/launcher/mods/arizona/{mod_id}");
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-    );
-    let resp = util::http_request(reqwest::Method::GET, &json_url, headers, std::time::Duration::from_secs(20))
-        .await
-        .map_err(|e| format!("Не удалось получить дерево мода: {e}"))?;
-    if resp.status() != reqwest::StatusCode::OK {
-        return Err(format!("Мод {mod_id} недоступен (HTTP {})", resp.status()));
-    }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let tree: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("Битый JSON мода: {e}"))?;
-    let data = tree
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "В дереве мода нет файлов".to_string())?;
-    let mut files: Vec<(String, String, u64, i64)> = Vec::new();
-    flatten_mod_tree(data, "", &mut files);
-    for (rel, _, _, _) in &files {
-        validate_mod_rel_path(rel)?;
-    }
-    Ok(files)
+async fn fetch_mod_tree(_mod_id: i64) -> Result<Vec<(String, String, u64, i64)>, String> {
+    Err("Каталог модов VEN-STATES ещё не подключён".to_string())
 }
 
 /// Дерево мода с кэшем (ключ id:version — версия из меты каталога).
