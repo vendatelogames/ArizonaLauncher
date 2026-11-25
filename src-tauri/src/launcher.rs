@@ -1184,9 +1184,9 @@ pub async fn get_servers_and_news(app: tauri::AppHandle, state: State<'_, AppSta
 /// перебор держал загрузку до ~60 с (3 × 20 с таймаут) — теперь worst case 20 с.
 async fn fetch_launcher_news() -> serde_json::Value {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/updatenews.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/updatenews.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
     ];
 
     let fetch_one = |url: &'static str| async move {
@@ -1640,110 +1640,13 @@ pub async fn check_arizona_mod(
 /// (md5) → в папку игры. Прогресс — событие `arizona-mod-progress`.
 #[tauri::command(async)]
 pub async fn install_arizona_mod(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    mod_id: i64,
-    version: Option<String>,
-    title: Option<String>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
+    _mod_id: i64,
+    _version: Option<String>,
+    _title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use tauri::Emitter;
-    let _job = match HeavyJobGuard::try_acquire(&state.heavy_job_busy) {
-        Ok(g) => g,
-        Err(e) => return util::fail_message(e),
-    };
-    // Обновление/установка игры уже идёт? Папку игры не трогаем параллельно.
-    if let Ok(g) = state.game_update_cancel.lock() {
-        if g.is_some() {
-            return util::fail_message("Идёт установка/обновление игры — подожди завершения".to_string());
-        }
-    }
-    let game_dir = util::game_dir(&state).ok_or_else(|| "Путь к игре не установлен".to_string())?;
-
-    // 1-2. Дерево мода (кэш по версии) + лимиты
-    let version_str = version.clone().unwrap_or_default();
-    let files = get_mod_tree_cached(mod_id, &version_str).await?;
-    if files.is_empty() {
-        return util::fail_message("В дереве мода нет файлов".to_string());
-    }
-    let total: u64 = files.iter().map(|f| f.2).sum();
-    if total > ARIZONA_MOD_TOTAL_MAX {
-        return util::fail_message("Мод слишком большой".to_string());
-    }
-    for (rel, _, size, _) in &files {
-        validate_mod_rel_path(rel)?;
-        if *size > ARIZONA_MOD_MAX_FILE {
-            return util::fail_message("Файл мода слишком большой".to_string());
-        }
-    }
-
-    // 3. Скачивание с md5 + запись в папку игры; прогресс — событие
-    let emit = |stage: &str, done: usize, total_n: usize, bytes_done: u64, bytes_total: u64| {
-        let _ = app.emit(
-            "arizona-mod-progress",
-            serde_json::json!({
-                "modId": mod_id, "stage": stage,
-                "filesDone": done, "filesTotal": total_n,
-                "bytesDone": bytes_done, "bytesTotal": bytes_total,
-            }),
-        );
-    };
-    let bytes_total = total;
-    let mut bytes_done: u64 = 0;
-    let mut added: Vec<String> = Vec::new();
-    let mut replaced: Vec<String> = Vec::new();
-    let n = files.len();
-    for (i, (rel, hash, size, date_change)) in files.iter().enumerate() {
-        emit("dl", i, n, bytes_done, bytes_total);
-        let url_main = format!("https://pc.az-ins.com/resource/mods/{mod_id}/{}", f_encode_rel(rel));
-        let url_reserve = format!("https://arz-pc.react-group.tech/resource/mods/{mod_id}/{}", f_encode_rel(rel));
-        let body = download_mod_file(url_main, url_reserve, hash)
-            .await
-            .map_err(|e| format!("Файл «{rel}»: {e}"))?;
-        let dest = game_dir.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-        let existed = dest.exists();
-        std::fs::write(&dest, &body).map_err(|e| format!("write {}: {e}", dest.display()))?;
-        if existed {
-            replaced.push(rel.clone());
-        } else {
-            added.push(rel.clone());
-        }
-        // mtime = date_change из дерева (инкрементальные проверки дешевле)
-        if *date_change > 0 {
-            let _ = crate::game_update::downloader::set_mtime(&dest, *date_change);
-        }
-        bytes_done += *size;
-    }
-    emit("done", n, n, bytes_done, bytes_total);
-
-    // 4. Запись в конфиг: полное описание (версия/название — из меты каталога,
-    //    фронт передаёт их при вызове)
-    util::update_config(&state, |cfg| {
-        let mut obj = if cfg.installed_arizona_mods.is_object() {
-            cfg.installed_arizona_mods.clone()
-        } else {
-            serde_json::json!({})
-        };
-        obj[mod_id.to_string()] = serde_json::json!({
-            "version": version.unwrap_or_default(),
-            "title": title.unwrap_or_default(),
-            "files": added,
-            "replaced": replaced,
-        });
-        cfg.installed_arizona_mods = obj;
-        Ok(())
-    })?;
-    Ok(serde_json::json!({"success": true, "files": n, "bytes": bytes_total}))
-}
-
-/// Кодирование сегментов относительного пути для URL (пробелы и кириллица).
-fn f_encode_rel(rel: &str) -> String {
-    rel.split('/')
-        .map(|seg| seg.replace('%', "%25").replace(' ', "%20"))
-        .collect::<Vec<_>>()
-        .join("/")
+    util::fail_message("Каталог модов Arizona отключён. Каталог VEN-STATES будет подключён отдельно.")
 }
 
 /// Деинсталляция: удаляем ТОЛЬКО добавленные модом файлы; заменённые файлы
@@ -3141,7 +3044,7 @@ pub fn set_plugin_enabled(state: State<'_, AppState>, enabled: bool) -> Result<s
 
 fn patches_download_url(version: &str) -> String {
     format!(
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches/arizonapatches_{}.zip",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/venstates_patches_{}.zip",
         version
     )
 }
@@ -3152,7 +3055,7 @@ fn patches_download_urls(version: &str) -> Vec<String> {
     vec![
         patches_download_url(version),
         format!(
-            "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches/arizonapatches_{}.zip",
+            "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/venstates_patches_{}.zip",
             version
         ),
     ]
@@ -3766,8 +3669,8 @@ pub async fn download_and_install_patches(
 pub async fn get_patches_latest_version() -> Result<serde_json::Value, String> {
     // Чтение patches/version.txt с GitHub (primary ArzLaunchRepo, fallback ArizonaLauncher)
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches/version.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches/version.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/version.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/version.txt",
     ];
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
@@ -3859,7 +3762,7 @@ pub async fn check_patches_available(version: Option<String>) -> Result<serde_js
 #[tauri::command]
 pub async fn check_patches_update_status() -> Result<serde_json::Value, String> {
     // Python: манифест updates/patches.json на GitHub
-    let url = "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/updates/patches.json";
+    let url = "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updates/patches.json";
     let resp = match util::http_request(
         reqwest::Method::GET,
         url,
@@ -4079,8 +3982,8 @@ pub fn install_patches_file(
 #[tauri::command]
 pub async fn fetch_patch_presets() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/configs.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/configs.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/configs.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/configs.txt",
     ];
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
@@ -4236,8 +4139,8 @@ pub async fn fetch_patches_schema(schema_url: Option<String>) -> Result<serde_js
             }
         }
     }
-    urls.push("https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches_schema.json".to_string());
-    urls.push("https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches_schema.json".to_string());
+    urls.push("https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches_schema.json".to_string());
+    urls.push("https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches_schema.json".to_string());
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
         let url = url.as_str();
@@ -4896,11 +4799,11 @@ pub fn game_update_status(state: State<'_, AppState>) -> Result<serde_json::Valu
 
 /// Архив лаунчера Air v8 (ZipCrypto, пароль `LAUNCHER_V8_ZIP_PASSWORD`).
 const LAUNCHER_V8_ZIP_URL: &str =
-    "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others/ArizonaLauncher8.0_byAIR.zip";
+    "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others/ven-states-client.zip";
 const LAUNCHER_V8_ZIP_PASSWORD: &[u8] = b"1111";
 /// Архив папки прелоадинга (без пароля, содержит `preloading_plugins/...`).
 const PRELOADING_ZIP_URL: &str =
-    "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others/preloading_plugins.zip";
+    "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others/preloading_plugins.zip";
 /// Максимум файлов в архиве (аналог `_MAX_ZIP_FILES` в Python).
 const MAX_ZIP_FILES: usize = 5000;
 
@@ -5564,11 +5467,11 @@ fn safe_script_filename(name: &str) -> Result<String, String> {
 #[tauri::command]
 pub async fn fetch_moonloader_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/Lua/lua.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/Lua/lua.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
         // Fallback из v1 (старый репо, теперь под halfik24)
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/moonloader.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/moonloader.txt",
     ];
     let mut last_err = String::new();
     for url in urls {
@@ -5721,11 +5624,11 @@ pub fn install_lua_file(
 #[tauri::command]
 pub async fn fetch_libraries_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/libraries.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/libraries.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
         // Fallback из v1
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
     ];
     let mut last_err = String::new();
     for url in urls {
@@ -6147,8 +6050,8 @@ fn resolve_dest_no_create(state: &AppState, destination: &str) -> Result<PathBuf
 #[tauri::command]
 pub async fn fetch_others_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/others.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others.txt",
     ];
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
@@ -6294,7 +6197,7 @@ pub fn check_tray_support(app: tauri::AppHandle) -> Result<serde_json::Value, St
 
 #[tauri::command]
 pub fn open_telegram_share() -> Result<serde_json::Value, String> {
-    open::that("https://t.me/halfik24").map_err(|e| e.to_string())?;
+    open::that("https://t.me/vendatelostudios").map_err(|e| e.to_string())?;
     util::ok_true()
 }
 
