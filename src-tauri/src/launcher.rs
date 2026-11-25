@@ -6918,7 +6918,7 @@ mod auto_cdn_news_tests {
         let body = serde_json::json!([
             {"gameId": "rodina", "news": [{"title": "r", "imageUrl": "i", "url": "u"}]},
             {"gameId": "arizona", "news": [
-                {"title": "T1", "imageUrl": "img1", "url": "https://arizona-rp.com/posts/6"},
+                {"title": "T1", "imageUrl": "img1", "url": "https://example.invalid/posts/6"},
                 {"title": "Без ссылки", "imageUrl": "", "url": ""}
             ]}
         ]);
@@ -6926,7 +6926,7 @@ mod auto_cdn_news_tests {
         assert_eq!(news.len(), 1, "без url записи отбрасываются");
         assert_eq!(news[0]["title"], "T1");
         assert_eq!(news[0]["image_url"], "img1");
-        assert_eq!(news[0]["url"], "https://arizona-rp.com/posts/6");
+        assert_eq!(news[0]["url"], "https://example.invalid/posts/6");
         let body2 = serde_json::json!([{"gameId": "rodina"}]);
         assert!(parse_arizona_projects(&body2).is_none());
     }
