@@ -134,7 +134,7 @@ impl Default for LauncherConfig {
     fn default() -> Self {
         Self {
             last_nickname: String::new(),
-            last_server: 15,
+            last_server: 1,
             game_path: String::new(),
             launcher_path: String::new(),
             last_launcher_version: None,
@@ -299,11 +299,13 @@ impl AppState {
             // приложения, где записи нет
             .or_else(dirs::data_local_dir)
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("ArizonaLauncher");
+            .join("VEN-STATES RP");
         fs::create_dir_all(&documents_path).ok();
 
         let config_path = documents_path.join("config.json");
         let mut config = Self::load_config(&config_path);
+        // This launcher has one fixed server; do not restore an Arizona server number.
+        config.last_server = 1;
         // Миграция: конфиг мог хранить base64-обоев целиком (~2.8 МБ).
         // Файл лежит в wallpapers/ — копия в конфиге не нужна (см.
         // launcher::bg_data_is_redundant).

@@ -902,6 +902,9 @@ fn quick_game_check(game_dir: &std::path::Path) -> Vec<String> {
 }
 
 #[tauri::command]
+const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
+const VEN_STATES_SERVER_PORT: u16 = 3302;
+
 pub async fn start_game(
     state: State<'_, AppState>,
     nickname: String,
@@ -950,17 +953,8 @@ pub async fn start_game(
             "message": "Nickname contains only invalid characters", "code": "NICKNAME_INVALID"}));
     }
 
-    let srv_ip = server_data
-        .as_ref()
-        .and_then(|s| s.get("ip"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("payson.arizona-rp.com")
-        .to_string();
-    let srv_port = server_data
-        .as_ref()
-        .and_then(|s| s.get("port"))
-        .map(|v| v.to_string().trim_matches('"').to_string())
-        .unwrap_or_else(|| "7777".to_string());
+    let srv_ip = VEN_STATES_SERVER_IP.to_string();
+    let srv_port = VEN_STATES_SERVER_PORT.to_string();
 
     let params = match launch_params {
         Some(p) => serde_json::from_value::<crate::config::LaunchParams>(p).ok(),
@@ -1433,25 +1427,8 @@ fn spawn_news_revalidate(app: &tauri::AppHandle) {
 /// - память есть (TTL 60s) → обычная логика fetch_servers;
 /// - памяти нет, но есть диск → отдаём диск мгновенно, фоном fetch_servers;
 /// - ничего нет (первый запуск) → ждём сеть, как раньше.
-async fn fetch_servers_sw(app: &tauri::AppHandle, state: &AppState) -> serde_json::Value {
-    let memory_empty = {
-        let guard = match state.servers_cache.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        guard.is_none()
-    };
-    log::info!("fetch_servers_sw: memory_empty={memory_empty}");
-
-    if !memory_empty {
-        return fetch_servers(state).await;
-    }
-    if let Some((servers, _, _)) = read_disk_servers(state) {
-        spawn_servers_revalidate(app);
-        log::info!("servers: дисковый кэш отдан мгновенно ({} серверов)", servers.len());
-        return serde_json::Value::Array(servers);
-    }
-    log::info!("servers: ни памяти, ни диска — сетевой запрос");
+async fn fetch_servers_sw(_app: &tauri::AppHandle, state: &AppState) -> serde_json::Value {
+    // Ignore any old Arizona server-list cache. Always return the configured VEN-STATES server.
     fetch_servers(state).await
 }
 
@@ -1474,154 +1451,35 @@ async fn fetch_news_sw(app: &tauri::AppHandle, state: &AppState) -> serde_json::
 
 /// Тело `get_servers`: кэш 60s, ETag/If-Modified-Since, 304 → кэш, нормализация, prefetch.
 async fn fetch_servers(state: &AppState) -> serde_json::Value {
-    const TTL: std::time::Duration = std::time::Duration::from_secs(60);
-
-    // Читаем состояние кэша (не держим лок через await)
-    let (cached_data, etag, last_modified, fresh) = {
-        let guard = match state.servers_cache.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(), // отравленный мьютекс — данные всё ещё читаемы
-        };
-        match guard.as_ref() {
-            Some(c) => (
-                Some(c.data.clone()),
-                c.etag.clone(),
-                c.last_modified.clone(),
-                c.ts.elapsed() < TTL,
-            ),
-            None => (None, None, None, false),
-        }
-    };
-
-    log::info!("fetch_servers: fresh={fresh}, has_cached_data={}", cached_data.is_some());
-
-    if fresh {
-        // Обновляем иконки в кэшированных данных, если они теперь доступны локально
-        if let Some(mut servers) = cached_data {
-            for s in servers.iter_mut() {
-                let has_icon = s.get("icon").and_then(|v| v.as_str()).map(|x| !x.is_empty()).unwrap_or(false);
-                if !has_icon {
-                    let icon_url = s.get("original_icon").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let id = pick(s, &["number", "serverNumber", "id"])
-                        .map(|v| match v {
-                            serde_json::Value::String(x) => x.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
-                    if !icon_url.is_empty() && !id.is_empty() {
-                        let uri = icon_data_uri(&icon_url, &id);
-                        if let Some(obj) = s.as_object_mut() {
-                            obj.insert("icon".into(), serde_json::Value::String(uri));
-                        }
-                    }
-                }
-            }
-            return serde_json::Value::Array(servers);
-        }
-    }
-
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("ArizonaLauncher/1.0"),
-    );
-    if let Some(ref e) = etag {
-        if let Ok(v) = reqwest::header::HeaderValue::from_str(e) {
-            headers.insert(reqwest::header::IF_NONE_MATCH, v);
-        }
-    }
-    if let Some(ref lm) = last_modified {
-        if let Ok(v) = reqwest::header::HeaderValue::from_str(lm) {
-            headers.insert(reqwest::header::IF_MODIFIED_SINCE, v);
-        }
-    }
-
-    let resp = match util::http_request(
-        reqwest::Method::GET,
-        "https://arizona-ping.react.group/desktop/ping/Arizona/ping.json",
-        headers,
-        std::time::Duration::from_secs(10),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            log::error!("Server fetch error: {e}");
-            return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-        }
-    };
+    // Fixed VEN-STATES server. Do not download or reuse the Arizona RP server directory.
+    let servers = vec![serde_json::json!({
+        "number": 1,
+        "name": "VEN-STATES RP",
+        "online": 0,
+        "queue": 0,
+        "recommended": true,
+        "ip": VEN_STATES_SERVER_IP,
+        "port": VEN_STATES_SERVER_PORT,
+        "maxplayers": 1000,
+        "original_icon": "",
+        "icon": ""
+    })];
 
     let now = std::time::Instant::now();
-
-    // 304 Not Modified — отдаём кэшированные данные
-    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-        if let Some(mut guard) = state.servers_cache.lock().ok() {
-            if let Some(ref mut c) = guard.as_mut() {
-                c.ts = now;
-            }
-        }
-        return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    }
-
-    if !resp.status().is_success() {
-        log::error!("Server fetch HTTP {}", resp.status());
-        return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    }
-
-    let etag_new = resp
-        .headers()
-        .get(reqwest::header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let lm_new = resp
-        .headers()
-        .get(reqwest::header::LAST_MODIFIED)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let data: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("Server fetch parse error: {e}");
-            return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-        }
-    };
-
-    let server_list: &Vec<serde_json::Value> = if data.is_object() {
-        match data.get("query") {
-            Some(q) if q.is_array() => q.as_array().unwrap(),
-            _ => match data.as_array() {
-                Some(a) => a,
-                None => {
-                    return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
-                }
-            },
-        }
-    } else if let Some(a) = data.as_array() {
-        a
-    } else {
-        return cached_data.map(serde_json::Value::Array).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    };
-
-    let servers = normalize_servers(server_list);
-
     if let Ok(mut guard) = state.servers_cache.lock() {
         *guard = Some(ServersCache {
             ts: now,
             data: servers.clone(),
-            etag: etag_new.clone(),
-            last_modified: lm_new.clone(),
+            etag: None,
+            last_modified: None,
         });
     }
-    // Дублируем на диск — переживёт перезапуск (мгновенный старт)
-    write_disk_servers(state, &servers, etag_new.as_deref(), lm_new.as_deref());
-
-    // Предзагружаем иконки в фоне
-    let spawn_servers = servers.clone();
-    tauri::async_runtime::spawn(async move {
-        prefetch_icons(spawn_servers).await;
-    });
-
+    write_disk_servers(state, &servers, None, None);
+    log::info!(
+        "VEN-STATES server ready: {}:{}",
+        VEN_STATES_SERVER_IP,
+        VEN_STATES_SERVER_PORT
+    );
     serde_json::Value::Array(servers)
 }
 
