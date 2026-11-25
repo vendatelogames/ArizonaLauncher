@@ -377,8 +377,8 @@ mod tests {
     #[test]
     fn file_url_joins_without_double_slash() {
         assert_eq!(
-            file_url("https://pc.az-ins.com/release/", "models/trees.img"),
-            "https://pc.az-ins.com/release/game/models/trees.img"
+            file_url("https://example.invalid/release/", "models/trees.img"),
+            "https://example.invalid/release/game/models/trees.img"
         );
     }
 
