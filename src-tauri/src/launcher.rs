@@ -231,21 +231,17 @@ fn major_to_version(major: u32) -> &'static str {
     }
 }
 
-/// gta_sa.exe в папке: сам корень либо bin\arizona (раскладки старого лаунчера и нашей установки).
+/// Ищет GTA SA в выбранной папке или в стандартной подпапке bin.
 fn find_gta_in(dir: &Path) -> Option<PathBuf> {
-    let gta = dir.join("gta_sa.exe");
-    if gta.exists() {
-        return Some(gta);
-    }
-    let gta = dir.join("bin").join("arizona").join("gta_sa.exe");
-    if gta.exists() {
-        return Some(gta);
+    for candidate in [dir.join("gta_sa.exe"), dir.join("bin").join("gta_sa.exe")] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
     None
 }
 
-/// Папки установок из реестра: ключи Uninstall, у которых «Arizona» в имени
-/// ключа или DisplayName, берём InstallLocation.
+/// Ищем только записи установок GTA San Andreas, не Arizona.
 fn registry_install_locations() -> Vec<PathBuf> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -253,32 +249,17 @@ fn registry_install_locations() -> Vec<PathBuf> {
     let mut out = Vec::new();
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         for base in [
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
-            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
         ] {
-            let Ok(item) = RegKey::predef(hive).open_subkey(base) else {
-                continue;
-            };
+            let Ok(item) = RegKey::predef(hive).open_subkey(base) else { continue };
             for key in item.enum_keys().filter_map(|k| k.ok()) {
-                let sub = key.to_lowercase();
-                if !sub.contains("arizona") {
-                    // В имени ключа Arizona нет — проверяем DisplayName
-                    let Ok(k) = item.open_subkey(&key) else { continue };
-                    let display: String = k
-                        .get_value::<String, _>("DisplayName")
-                        .unwrap_or_default()
-                        .to_lowercase();
-                    if !display.contains("arizona") {
-                        continue;
-                    }
-                    if let Ok(loc) = k.get_value::<String, _>("InstallLocation") {
-                        if !loc.trim().is_empty() {
-                            out.push(PathBuf::from(loc.trim()));
-                        }
-                    }
+                let Ok(k) = item.open_subkey(&key) else { continue };
+                let display: String = k.get_value("DisplayName").unwrap_or_default();
+                let display = display.to_lowercase();
+                if !(display.contains("grand theft auto san andreas") || display.contains("gta san andreas")) {
                     continue;
                 }
-                let Ok(k) = item.open_subkey(&key) else { continue };
                 if let Ok(loc) = k.get_value::<String, _>("InstallLocation") {
                     if !loc.trim().is_empty() {
                         out.push(PathBuf::from(loc.trim()));
@@ -300,37 +281,21 @@ fn drive_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Скан корней дисков: папки первого уровня с «arizona» в имени (и подпапки
-/// на один уровень), с общим дедлайном, чтобы не морозить UI на больших дисках.
+/// Сканирует папки верхнего уровня на дисках и ищет gta_sa.exe.
+/// Ограничение по времени не даёт зависнуть интерфейсу на больших дисках.
 fn scan_drive_roots(deadline: std::time::Instant) -> Option<PathBuf> {
     for root in drive_roots() {
         let Ok(entries) = fs::read_dir(&root) else { continue };
-        for e in entries.flatten() {
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let dir = e.path();
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            if !name.contains("arizona") {
-                continue;
-            }
-            if let Some(g) = find_gta_in(&dir) {
-                return Some(g);
-            }
-            // Один уровень вглубь: G:\...\Arizona RP\...\gta_sa.exe
-            if let Ok(subs) = fs::read_dir(&dir) {
-                for s in subs.flatten() {
-                    if std::time::Instant::now() > deadline {
-                        return None;
-                    }
-                    if !s.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        continue;
-                    }
-                    if let Some(g) = find_gta_in(&s.path()) {
-                        return Some(g);
+        for entry in entries.flatten() {
+            if std::time::Instant::now() > deadline { return None; }
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let dir = entry.path();
+            if let Some(game) = find_gta_in(&dir) { return Some(game); }
+            if let Ok(subdirs) = fs::read_dir(&dir) {
+                for sub in subdirs.flatten() {
+                    if std::time::Instant::now() > deadline { return None; }
+                    if sub.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if let Some(game) = find_gta_in(&sub.path()) { return Some(game); }
                     }
                 }
             }
@@ -339,46 +304,28 @@ fn scan_drive_roots(deadline: std::time::Instant) -> Option<PathBuf> {
     None
 }
 
-/// Ищет gta_sa.exe (старый лаунчер → реестр → корни дисков) без касания конфига,
-/// чтобы гонять в блокирующем потоке. Возвращает (gta_sa.exe, launcher-клиент).
+/// Автоопределение обычной установки GTA San Andreas.
 fn auto_detect_game_find() -> Option<(PathBuf, Option<PathBuf>)> {
     let home = dirs::home_dir().unwrap_or_default();
-    let game_subpath = std::path::PathBuf::from("bin").join("arizona");
-
-    let base_candidates: Vec<PathBuf> = vec![
-        home.join("AppData").join("Local").join("Programs").join("Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files/Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files (x86)/Arizona Games Launcher"),
+    let candidates = [
+        home.join("Games/GTA San Andreas"),
+        PathBuf::from("C:/Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files/Rockstar Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files (x86)/Rockstar Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas"),
     ];
-
-    for base in &base_candidates {
-        let game_dir = base.join(&game_subpath);
-        if let Some(gta) = find_gta_in(&game_dir) {
-            return Some((gta.clone(), find_launcher_exe(&game_dir).map(|(p, _)| p)));
-        }
+    for dir in candidates {
+        if let Some(game) = find_gta_in(&dir) { return Some((game, None)); }
     }
 
-    // Реестр: ключи Uninstall со словом Arizona → InstallLocation
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     for base in registry_install_locations() {
-        // InstallLocation может указывать до корня установки либо сразу до клиента
-        for dir in [base.join(&game_subpath), base] {
-            if let Some(gta) = find_gta_in(&dir) {
-                let dir = gta.parent().unwrap().to_path_buf();
-                return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
+        if let Some(game) = find_gta_in(&base) {
+            return Some((game, None));
         }
+        if std::time::Instant::now() > deadline { return None; }
     }
-
-    // Корни дисков: G:\Arizona Games Launcher\... (у других игроков игра может лежать где угодно)
-    if let Some(gta) = scan_drive_roots(deadline) {
-        let dir = gta.parent().unwrap().to_path_buf();
-        return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
-    }
-    None
+    scan_drive_roots(deadline).map(|game| (game, None))
 }
 
 #[tauri::command]
