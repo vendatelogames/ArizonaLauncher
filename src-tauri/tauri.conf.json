@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "Arizona RP Launcher",
+  "productName": "VEN-STATES Launcher",
   "version": "2.0.0-beta",
-  "identifier": "com.arizona.launcher",
+  "identifier": "com.vendatelo.venstates.launcher",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Arizona RP Launcher",
+        "title": "VEN-STATES Launcher",
         "width": 1285,
         "height": 732,
         "minWidth": 1032,
@@ -32,16 +32,16 @@
     "trayIcon": {
       "iconPath": "icons/icon.png",
       "iconAsTemplate": false,
-      "tooltip": "Arizona RP Launcher"
+      "tooltip": "VEN-STATES Launcher"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "halfik24",
-    "copyright": "© 2026 halfik24",
-    "shortDescription": "Лаунчер Arizona RP",
-    "longDescription": "Arizona RP Launcher — удобный лаунчер для серверов Arizona RP. Автоматическая установка и обновление, каталог модов и скриптов, патчи, профили и запуск игры в пару кликов.",
+    "publisher": "VENDATELO",
+    "copyright": "© 2026 VENDATELO",
+    "shortDescription": "Лаунчер VEN-STATES RP",
+    "longDescription": "VEN-STATES Launcher — удобный лаунчер для серверов VEN-STATES RP. Автоматическая установка и обновление, каталог модов и скриптов, патчи, профили и запуск игры в пару кликов.",
     "icon": [
       "icons/128x128.png",
       "icons/128x128@2x.png",
