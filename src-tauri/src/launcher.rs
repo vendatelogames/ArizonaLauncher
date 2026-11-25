@@ -357,31 +357,24 @@ pub async fn auto_detect_paths(state: State<'_, AppState>) -> Result<serde_json:
     }))
 }
 
-/// Ручная установка путей (легаси-команда, фронт её не зовёт). Те же ворота,
-/// что у select_game_path/auto_detect: game должен существовать как gta_sa.exe,
-/// лаунчер — по ресурсу версии (util::is_arizona_launcher, как в find_launcher_exe).
+/// Совместимая команда старого фронтенда: сохраняет только путь GTA SA.
+/// Параметр launcher оставлен в сигнатуре IPC, но больше не используется.
 #[tauri::command(async)]
-pub fn set_game_paths(state: State<'_, AppState>, game: String, launcher: String) -> Result<serde_json::Value, String> {
+pub fn set_game_paths(state: State<'_, AppState>, game: String, _launcher: String) -> Result<serde_json::Value, String> {
     let game_exe = std::path::Path::new(&game);
-    let is_game_exe = game_exe
-        .file_name()
+    let is_game_exe = game_exe.file_name()
         .map(|n| n.to_string_lossy().eq_ignore_ascii_case("gta_sa.exe"))
         .unwrap_or(false);
     if !is_game_exe || !game_exe.is_file() {
         return util::fail_message("Путь к игре должен указывать на существующий gta_sa.exe");
     }
-    if !launcher.is_empty() {
-        let launcher_exe = std::path::Path::new(&launcher);
-        if !launcher_exe.is_file() || !util::is_arizona_launcher(launcher_exe) {
-            return util::fail_message("Путь к лаунчеру должен указывать на exe лаунчера Arizona (проверка по ресурсу версии)");
-        }
-    }
     util::update_config(&state, |cfg| {
         cfg.game_path = game;
-        cfg.launcher_path = launcher;
+        cfg.launcher_path.clear();
+        cfg.launch_method = "native".to_string();
         Ok(())
     })?;
-    Ok(serde_json::json!({"success": true, "message": "Paths set"}))
+    Ok(serde_json::json!({"success": true, "message": "VEN-STATES game path saved"}))
 }
 
 /// Нативный диалог выбора папки игры: проверяем gta_sa.exe, сохраняем пути,
@@ -426,13 +419,11 @@ pub async fn select_game_path(
         }));
     }
 
-    // Сохраняем пути: лаунчер ищем по ресурсу версии среди всех exe папки
-    let launcher_exe = find_launcher_exe(&folder)
-        .map(|(p, _)| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // VEN-STATES запускает GTA SA напрямую: внешний Air-клиент не ищем.
     util::update_config(&state, |cfg| {
         cfg.game_path = game_exe.to_string_lossy().to_string();
-        cfg.launcher_path = launcher_exe;
+        cfg.launcher_path.clear();
+        cfg.launch_method = "native".to_string();
         Ok(())
     })?;
 
@@ -887,7 +878,7 @@ fn icon_cache_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::cache_dir)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-    let dir = base.join("ArizonaLauncher").join("icons");
+    let dir = base.join("VEN-STATES Launcher").join("icons");
     std::fs::create_dir_all(&dir).ok();
     dir
 }
@@ -1078,7 +1069,7 @@ fn normalize_servers(server_list: &[serde_json::Value]) -> Vec<serde_json::Value
             "online": jnum(s, &["online", "playersOnline"], serde_json::json!(0)),
             "queue": jnum(s, &["queue", "queueLength"], serde_json::json!(0)),
             "recommended": pick(s, &["recomend", "recommended"]).is_some(),
-            "ip": jstr(s, &["ip"], &format!("server{}.arizona-rp.com", id_str)),
+            "ip": jstr(s, &["ip"], &"188.127.241.74:3302".to_string()),
             "port": jnum(s, &["port"], serde_json::json!(7777)),
             "maxplayers": jnum(s, &["maxplayers", "maxPlayers"], serde_json::json!(1000)),
             "original_icon": icon_url,
