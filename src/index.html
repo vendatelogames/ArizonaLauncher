@@ -11885,95 +11885,26 @@
         async function checkLauncherInstallation(pathsConfigured, gamePath) {
             const wrap = document.getElementById('updateLauncherWrap');
             if (!wrap) return;
+
             const checkSeq = ++_installActionCheckSeq;
-            _installActionCheckPending = true;
             _installActionBtn = null;
-            wrap.style.pointerEvents = 'none';
+            _installActionCheckPending = false;
 
             if (!pathsConfigured) {
                 _installActionBtn = 'no-path';
-                _installActionCheckPending = false;
                 _renderInstallHandle();
                 return;
             }
 
-            // Проверка обновления игры — полный MD5-скан папки (первый раз —
-            // минуты, пока не соберётся кэш хэшей) и без промежуточных событий.
-            // Показываем видимое состояние на язычке, иначе после выбора пути
-            // окно выглядит зависшим.
-            const icon = document.getElementById('patchHandleIcon');
-            const label = document.getElementById('updateBtnText');
-            wrap.style.display = 'flex';
-            wrap.classList.remove('pulse');
-            wrap.style.opacity = '1';
-            wrap.style.pointerEvents = 'none';
-            wrap.title = 'Проверяем файлы игры — это может занять пару минут';
-            icon.style.display = '';
-            icon.innerHTML = '<i data-lucide="loader"></i>';
-            label.textContent = 'Проверка игры';
-            label.style.display = '';
-            if (typeof refreshLucideIcons === 'function') refreshLucideIcons();
-            const _spinSvg = icon.querySelector('svg');
-            if (_spinSvg) _spinSvg.style.animation = 'spin 1s linear infinite';
-
-            // Лаунчер/preloading не установлены — кнопка «Установить».
-            // Ошибка одного запроса не должна пропускать независимую проверку
-            // обновления игры и оставлять панель в случайном состоянии.
-            if (gamePath && window.pywebview && window.pywebview.api.get_install_action_api) {
-                try {
-                    const sep = gamePath.lastIndexOf('\\') >= 0 ? '\\' : '/';
-                    const folderPath = gamePath.substring(0, gamePath.lastIndexOf(sep));
-                    const actionResult = await window.pywebview.api.get_install_action_api(folderPath);
-                    if (checkSeq !== _installActionCheckSeq) return;
-                    const info = (actionResult && actionResult.success) ? actionResult.install_info : null;
-                    if (info && info.action && info.action !== 'none' && info.action !== 'error') {
-                        _installActionBtn = { folder: folderPath, info };
-                        _installActionCheckPending = false;
-                        _renderInstallHandle();
-                        return;
-                    }
-                    // native/всё установлено: сбрасываем кнопку, оставшуюся от
-                    // прошлого способа запуска (Air), иначе она висит зря.
-                    if (info && info.action === 'none') _installActionBtn = null;
-                } catch (e) {
-                    if (checkSeq !== _installActionCheckSeq) return;
-                    console.warn('get_install_action_api:', e);
-                }
-            }
-
-            if (window.pywebview && window.pywebview.api.check_update_api) {
-                try {
-                    const result = await window.pywebview.api.check_update_api(gamePath);
-                    if (checkSeq !== _installActionCheckSeq) return;
-                    if (result.success && result.needs_update) {
-                        _installActionBtn = 'game-update';
-                        const icon = document.getElementById('patchHandleIcon');
-                        const label = document.getElementById('updateBtnText');
-                        icon.style.display = '';
-                        icon.innerHTML = '<i data-lucide="download"></i>';
-                        label.textContent = 'Обновить';
-                        label.style.display = '';
-                        wrap.style.display = 'flex';
-                        wrap.classList.add('pulse');
-                        wrap.style.opacity = '1';
-                        wrap.style.pointerEvents = '';
-                        wrap.title = result.message || 'Требуется установка патчей';
-                        if (typeof refreshLucideIcons === 'function') refreshLucideIcons();
-                        _installActionCheckPending = false;
-                        return;
-                    }
-                } catch (e) {
-                    if (checkSeq !== _installActionCheckSeq) return;
-                    console.warn('check_update_api:', e);
-                }
-            }
-
+            // VEN-STATES: не запускаем автоматическую проверку CDN/манифеста
+            // при открытии лаунчера. Это не должно сканировать или затрагивать
+            // существующий кэш Arizona и файлы GTA SA.
+            // Ручная проверка игровых обновлений остаётся в настройках.
             if (checkSeq !== _installActionCheckSeq) return;
-            _installActionBtn = null;
-            _installActionCheckPending = false;
             wrap.style.display = 'none';
             wrap.style.pointerEvents = '';
             wrap.classList.remove('pulse');
+            wrap.title = '';
         }
 
         function handleServerChange() {
