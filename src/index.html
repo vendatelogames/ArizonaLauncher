@@ -12305,7 +12305,9 @@
                     : null;
                 if (saved && saved.success && saved.game_path) {
                     pathEl.textContent = saved.game_path;
-                    statusEl.textContent = 'GTA San Andreas найден. Папка сохранена и готова к запуску.';
+                    statusEl.textContent = saved.protected_install
+                        ? 'Защищённая папка: GTA SA можно запускать, но установка, обновление и починка файлов здесь запрещены.'
+                        : 'GTA San Andreas найден. Папка сохранена и готова к запуску.';
                     return;
                 }
                 const target = pendingFolder || _installFolder || '';
