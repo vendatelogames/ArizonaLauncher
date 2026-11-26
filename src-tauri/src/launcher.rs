@@ -222,6 +222,16 @@ fn find_launcher_exe(folder: &std::path::Path) -> Option<(PathBuf, u32)> {
     best
 }
 
+/// Detect known Arizona install folders so VEN-STATES never writes into their cache.
+pub(crate) fn is_arizona_game_folder(folder: &Path) -> bool {
+    let has_arizona_path = folder.ancestors().any(|ancestor| {
+        ancestor.file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase().contains("arizona"))
+            .unwrap_or(false)
+    });
+    has_arizona_path || find_launcher_exe(folder).is_some()
+}
+
 /// Мажорная версия лаунчера → "v6" / "v7" / "v8" (неизвестное и новее 8 → "v8").
 fn major_to_version(major: u32) -> &'static str {
     match major {
@@ -233,6 +243,9 @@ fn major_to_version(major: u32) -> &'static str {
 
 /// Ищет GTA SA в выбранной папке или в стандартной подпапке bin.
 fn find_gta_in(dir: &Path) -> Option<PathBuf> {
+    if is_arizona_game_folder(dir) {
+        return None;
+    }
     for candidate in [dir.join("gta_sa.exe"), dir.join("bin").join("gta_sa.exe")] {
         if candidate.is_file() {
             return Some(candidate);
@@ -368,6 +381,9 @@ pub fn set_game_paths(state: State<'_, AppState>, game: String, _launcher: Strin
     if !is_game_exe || !game_exe.is_file() {
         return util::fail_message("Путь к игре должен указывать на существующий gta_sa.exe");
     }
+    if game_exe.parent().map(is_arizona_game_folder).unwrap_or(false) {
+        return util::fail_message("Нельзя использовать папку Arizona RP. Укажи отдельную установку VEN-STATES.");
+    }
     util::update_config(&state, |cfg| {
         cfg.game_path = game;
         cfg.launcher_path.clear();
@@ -402,6 +418,10 @@ pub async fn select_game_path(
             .map_err(|_| "Некорректный путь".to_string())?,
     };
     let folder_str = folder.to_string_lossy().to_string();
+
+    if is_arizona_game_folder(&folder) {
+        return util::fail_message("Эта папка относится к Arizona RP. Выбери отдельную папку VEN-STATES — кэш Arizona останется нетронутым.");
+    }
 
     let game_exe = folder.join("gta_sa.exe");
     if !game_exe.exists() {
@@ -4382,6 +4402,9 @@ pub async fn check_update_api(
         .unwrap_or_else(|| util::game_path(&state));
     let target = resolve_game_target(&gp)
         .ok_or_else(|| "game_path не установлен".to_string())?;
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("Обновление Arizona RP через VEN-STATES Launcher запрещено. Выбери отдельную папку игры.");
+    }
     let documents = state.documents_path.clone();
     let (cdn_main, cdn_reserve) = ven_states_game_cdns(&state);
     if cdn_main.is_empty() {
@@ -4475,6 +4498,9 @@ fn spawn_game_job(
                 .ok_or_else(|| "game_path не установлен".to_string())?
         }
     };
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("VEN-STATES не может изменять папку Arizona RP. Выбери отдельную папку игры.");
+    }
     if gta_process_running() {
         return Ok(serde_json::json!({
             "success": false,
