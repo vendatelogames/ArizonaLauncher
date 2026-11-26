@@ -1540,7 +1540,7 @@
             background: rgba(255, 255, 255, 0.075);
         }
 
-        /* Новости Arizona RP: карточка с обложкой (изображение через
+        /* Новости VEN-STATES RP: карточка с обложкой (изображение через
            _fetchImageData → data URL; при неудаче обложка скрывается) */
         .news-item-cover {
             display: none;
@@ -8297,6 +8297,10 @@
         }
 
     </style>
+<style>
+        /* VEN-STATES does not use the Arizona Air launcher or its installer. */
+        #airInstallSection, label.launch-item:has(#lmAir), #modsTabAzmod { display:none!important; }
+</style>
 </head>
 <body>
     <!-- ── Свой тайтлбар (только frame-custom) ── -->
@@ -8656,7 +8660,7 @@
                                 <span class="lp-check"><i data-lucide="check" stroke-width="3"></i></span>
                             </label>
 
-                            <label class="launch-item">
+                            <label class="launch-item" style="display:none;">
                                 <input type="radio" name="launchMethodRadio" id="lmAir" value="air"
                                        onchange="onLaunchMethodChange()">
                                 <span class="lp-ico"><i data-lucide="wind"></i></span>
@@ -8669,13 +8673,12 @@
                             </label>
 
                         </div>
-                        <div class="lm-hint">Нативный запуск — напрямую через gta_sa.exe.
-                            Плагины из preloading_plugins работают только с Air.</div>
+                        <div class="lm-hint">VEN-STATES запускает GTA San Andreas напрямую через SA-MP 0.3.7. Внешний Air-клиент не требуется.</div>
                     </section>
 
                     <!-- Установка Air: показывается только когда выбран Air,
                          а лаунчера/preloading в папке игры нет -->
-                    <section class="lp-sec" id="airInstallSection" style="display:none;">
+                    <section class="lp-sec" id="airInstallSection" style="display:none!important;">
                         <div class="lp-cap">Лаунчер Air</div>
                         <div class="air-install-card">
                             <div class="air-install-info">
@@ -9596,7 +9599,7 @@
                 <button class="mods-tab active" role="tab" aria-selected="true" onclick="switchModsTab('moonloader')"><i data-lucide="moon"></i> Moonloader</button>
                 <button class="mods-tab" role="tab" aria-selected="false" onclick="switchModsTab('patches')"><i data-lucide="shield"></i> Настройки игры</button>
                 <button class="mods-tab" role="tab" aria-selected="false" onclick="switchModsTab('other')"><i data-lucide="package"></i> Другое</button>
-                <button class="mods-tab" role="tab" aria-selected="false" onclick="switchModsTab('azmod')"><i data-lucide="gamepad-2"></i> Каталог модов</button>
+                <!-- Project mod catalogue appears when the VEN-STATES asset feed is configured. -->
             </div>
 
             <!-- Moonloader скрипты -->
@@ -9870,7 +9873,7 @@
                     <div class="install-av-text">
                         <div class="install-av-title">Будет установлен лаунчер v8</div>
                         <div class="install-av-desc">
-                            <b>v8</b> (<b style="color:rgba(130,220,150,0.95)">ArizonaLauncher8.0_byAIR.exe</b>) — единственная поддерживаемая версия, работает стабильно.<br><br>
+                            <b>v8</b> (<b style="color:rgba(130,220,150,0.95)">Внешний Air-клиент отключён</b>) — единственная поддерживаемая версия, работает стабильно.<br><br>
                             Антивирус может ложно срабатывать на загружаемый файл.
                             Рекомендуется временно отключить антивирус или добавить папку игры в исключения <b>до начала установки</b>.
                         </div>
@@ -9894,7 +9897,7 @@
                         <div class="install-ver-radio selected" id="installVerRadioV8"></div>
                         <div class="install-ver-info">
                             <div class="install-ver-name"><i data-lucide="shield-check"></i> v8 — Рекомендуемая</div>
-                            <div class="install-ver-desc">ArizonaLauncher8.0_byAIR.exe · стабильно работает</div>
+                            <div class="install-ver-desc">Внешний Air-клиент отключён · стабильно работает</div>
                         </div>
                     </label>
                 </div>
@@ -11490,7 +11493,7 @@
                                         ${news.date ? `<div class="news-item-date">${escapeHtml(news.date)}</div>` : ''}
                                         <div class="news-item-link-hint"><i data-lucide="link"></i> Открыть релиз на GitHub</div>`;
                                     newsItem.addEventListener('click', () => {
-                                        openExternal('https://github.com/halfik24/ArizonaLauncher/releases');
+                                        openExternal('https://github.com/vendatelogames/ArizonaLauncher/releases');
                                     });
                                     launcherNewsDiv.appendChild(newsItem);
                                 });
@@ -11521,11 +11524,7 @@
                     }
                 } else {
                     serversData = [
-                        { number: 1, name: 'Phoenix', online: 1250, maxplayers: 2000, ip: 'phoenix.arizona-rp.com', port: 7777 },
-                        { number: 2, name: 'Tucson', online: 980, maxplayers: 2000, ip: 'tucson.arizona-rp.com', port: 7777 },
-                        { number: 3, name: 'Scottdale', online: 1450, maxplayers: 2000, ip: 'scottdale.arizona-rp.com', port: 7777 },
-                        { number: 4, name: 'Chandler', online: 1100, maxplayers: 2000, ip: 'chandler.arizona-rp.com', port: 7777 },
-                        { number: 5, name: 'Brainburg', online: 890, maxplayers: 2000, ip: 'brainburg.arizona-rp.com', port: 7777 }
+                        { number: 1, name: 'VEN-STATES RP', online: 0, maxplayers: 1000, ip: '188.127.241.74', port: 3302 }
                     ];
                     updateServerSelect();
                 }
@@ -11705,7 +11704,7 @@
                             <div class="news-item-link-hint"><i data-lucide="link"></i> Открыть релиз на GitHub</div>
                         `;
                         newsItem.addEventListener('click', () => {
-                            openExternal('https://github.com/halfik24/ArizonaLauncher/releases');
+                            openExternal('https://github.com/vendatelogames/ArizonaLauncher/releases');
                         });
                         launcherNewsDiv.appendChild(newsItem);
                     });
@@ -11789,13 +11788,13 @@
             } else if (tab === 'arizona') {
                 document.querySelector('.news-tab:nth-child(2)').classList.add('active');
                 document.getElementById('arizonaNews').classList.add('active');
-                // Ленивая загрузка: сетка Arizona RP живёт в отдельном API
+                // Ленивая загрузка: сетка VEN-STATES RP живёт в отдельном API
                 loadArizonaNews();
             }
             _replayNewsReveal(); // каскад карточек при смене вкладки
         }
 
-        // ── Новости Arizona RP: api.arizona-five.com/launcher/projects
+        // ── Новости VEN-STATES RP: api.arizona-five.com/launcher/projects
         // (как в оригинальном лаунчере, handoff/original-launcher/04).
         // Бэк отдаёт {title, image_url, url}; картинки — через _fetchImageData. ──
         let _arizonaNewsLoaded = false;
@@ -11821,7 +11820,7 @@
                     const id = 'az_' + String(n.url || '').replace(/\W/g, '').substring(0, 30);
                     html += `<div class="news-item news-item-clickable" data-news-id="${escapeHtml(id)}">
                         <div class="news-item-cover" data-cover="${escapeHtml(n.image_url || '')}"></div>
-                        <div class="news-item-title">${escapeHtml(n.title || 'Arizona RP')}</div>
+                        <div class="news-item-title">${escapeHtml(n.title || 'VEN-STATES RP')}</div>
                         <div class="news-item-link-hint"><i data-lucide="external-link"></i> Открыть</div>
                     </div>`;
                 });
