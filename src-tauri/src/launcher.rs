@@ -224,12 +224,14 @@ fn find_launcher_exe(folder: &std::path::Path) -> Option<(PathBuf, u32)> {
 
 /// Detect known Arizona install folders so VEN-STATES never writes into their cache.
 pub(crate) fn is_arizona_game_folder(folder: &Path) -> bool {
-    let has_arizona_path = folder.ancestors().any(|ancestor| {
-        ancestor.file_name()
+    // Check the selected directory and a few parent levels: some old clients
+    // store gta_sa.exe below a bin/ subfolder while their launcher sits above it.
+    folder.ancestors().take(4).any(|ancestor| {
+        let named_arizona = ancestor.file_name()
             .map(|name| name.to_string_lossy().to_ascii_lowercase().contains("arizona"))
-            .unwrap_or(false)
-    });
-    has_arizona_path || find_launcher_exe(folder).is_some()
+            .unwrap_or(false);
+        named_arizona || find_launcher_exe(ancestor).is_some()
+    })
 }
 
 /// Мажорная версия лаунчера → "v6" / "v7" / "v8" (неизвестное и новее 8 → "v8").
