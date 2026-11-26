@@ -5001,6 +5001,9 @@ pub async fn check_update_api(
         .unwrap_or_else(|| util::game_path(&state));
     let target = resolve_game_target(&gp)
         .ok_or_else(|| "game_path не установлен".to_string())?;
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("Обновление Arizona RP через VEN-STATES Launcher запрещено. Выбери отдельную папку игры.");
+    }
     let documents = state.documents_path.clone();
 
     let job = Job {
@@ -5088,6 +5091,9 @@ fn spawn_game_job(
                 .ok_or_else(|| "game_path не установлен".to_string())?
         }
     };
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("VEN-STATES не может изменять папку Arizona RP. Выбери отдельную папку игры.");
+    }
     if gta_process_running() {
         return Ok(serde_json::json!({
             "success": false,
