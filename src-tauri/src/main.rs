@@ -53,7 +53,7 @@ fn init_logging() {
 fn main() {
     init_logging();
     log::info!(
-        "Arizona RP Launcher {} запуск",
+        "VEN-STATES RP Launcher {} запуск",
         env!("CARGO_PKG_VERSION")
     );
 
