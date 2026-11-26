@@ -8,6 +8,10 @@ use tauri::{Emitter, Manager, State};
 const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
 const VEN_STATES_SERVER_PORT: u16 = 3302;
 
+// Arizona CDN is blocked until VEN-STATES has its own trusted file manifest and mirrors.
+const VEN_STATES_CONTENT_SOURCE_CONFIGURED: bool = false;
+const VEN_STATES_CONTENT_SOURCE_MESSAGE: &str = "Установка и обновление VEN-STATES пока отключены: нужно подключить собственный каталог игровых файлов. Файлы Arizona RP не загружаются.";
+
 
 // ==================== Config Commands ====================
 
@@ -202,6 +206,15 @@ pub fn set_launch_method(state: State<'_, AppState>, method: String) -> Result<s
 /// Ищет exe лаунчера в папке по ресурсу версии (не по имени файла):
 /// подойдёт любой exe, у которого ProductName/OriginalFilename указывает
 /// на лаунчер Arizona. Если их несколько — возвращает самый новый.
+pub(crate) fn is_arizona_game_folder(folder: &Path) -> bool {
+    let has_arizona_path = folder.ancestors().any(|ancestor| {
+        ancestor.file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase().contains("arizona"))
+            .unwrap_or(false)
+    });
+    has_arizona_path || find_launcher_exe(folder).is_some()
+}
+
 fn find_launcher_exe(folder: &std::path::Path) -> Option<(PathBuf, u32)> {
     let entries = std::fs::read_dir(folder).ok()?;
     let mut best: Option<(PathBuf, u32)> = None;
@@ -342,41 +355,16 @@ fn scan_drive_roots(deadline: std::time::Instant) -> Option<PathBuf> {
 /// Ищет gta_sa.exe (старый лаунчер → реестр → корни дисков) без касания конфига,
 /// чтобы гонять в блокирующем потоке. Возвращает (gta_sa.exe, launcher-клиент).
 fn auto_detect_game_find() -> Option<(PathBuf, Option<PathBuf>)> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let game_subpath = std::path::PathBuf::from("bin").join("arizona");
-
-    let base_candidates: Vec<PathBuf> = vec![
-        home.join("AppData").join("Local").join("Programs").join("Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files/Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files (x86)/Arizona Games Launcher"),
+    let home = dirs::home_dir()?;
+    // Discover only the dedicated VEN-STATES folder. Never scan Arizona registry entries or drives.
+    let candidates = [
+        home.join("Games").join("VEN-STATES RP"),
+        home.join("Games").join("VEN-STATES"),
     ];
-
-    for base in &base_candidates {
-        let game_dir = base.join(&game_subpath);
-        if let Some(gta) = find_gta_in(&game_dir) {
-            return Some((gta.clone(), find_launcher_exe(&game_dir).map(|(p, _)| p)));
-        }
-    }
-
-    // Реестр: ключи Uninstall со словом Arizona → InstallLocation
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    for base in registry_install_locations() {
-        // InstallLocation может указывать до корня установки либо сразу до клиента
-        for dir in [base.join(&game_subpath), base] {
-            if let Some(gta) = find_gta_in(&dir) {
-                let dir = gta.parent().unwrap().to_path_buf();
-                return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-        }
-    }
-
-    // Корни дисков: G:\Arizona Games Launcher\... (у других игроков игра может лежать где угодно)
-    if let Some(gta) = scan_drive_roots(deadline) {
-        let dir = gta.parent().unwrap().to_path_buf();
-        return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
+    for folder in candidates {
+        if is_arizona_game_folder(&folder) { continue; }
+        let gta = folder.join("gta_sa.exe");
+        if gta.is_file() { return Some((gta, None)); }
     }
     None
 }
@@ -421,6 +409,9 @@ pub fn set_game_paths(state: State<'_, AppState>, game: String, launcher: String
     if !is_game_exe || !game_exe.is_file() {
         return util::fail_message("Путь к игре должен указывать на существующий gta_sa.exe");
     }
+    if game_exe.parent().map(is_arizona_game_folder).unwrap_or(false) {
+        return util::fail_message("Нельзя использовать папку Arizona RP. Укажи отдельную установку VEN-STATES.");
+    }
     if !launcher.is_empty() {
         let launcher_exe = std::path::Path::new(&launcher);
         if !launcher_exe.is_file() || !util::is_arizona_launcher(launcher_exe) {
@@ -460,6 +451,10 @@ pub async fn select_game_path(
             .map_err(|_| "Некорректный путь".to_string())?,
     };
     let folder_str = folder.to_string_lossy().to_string();
+
+    if is_arizona_game_folder(&folder) {
+        return util::fail_message("Эта папка относится к Arizona RP. Выбери отдельную папку VEN-STATES — кэш Arizona останется нетронутым.");
+    }
 
     let game_exe = folder.join("gta_sa.exe");
     if !game_exe.exists() {
@@ -972,8 +967,7 @@ pub async fn start_game(
     let is_v7plus = native || launcher_ver == "v7" || launcher_ver == "v8";
     let cmd = build_launch_args(native, is_v7plus, &srv_ip, &srv_port, &nickname, &params);
 
-    // kill_all_launchers перед стартом (в Python — синхронно с sleep 1s)
-    tokio::task::spawn_blocking(kill_all_launchers).await.ok();
+    // Do not terminate an independently installed Arizona launcher or its processes.
 
     let (exe, cwd) = if native {
         // Реестр — паритет с оригиналом (03 §1, 04): SA-MP читает оттуда ник
@@ -4999,6 +4993,9 @@ pub async fn check_update_api(
     state: State<'_, AppState>,
     game_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if !VEN_STATES_CONTENT_SOURCE_CONFIGURED {
+        return util::fail_message(VEN_STATES_CONTENT_SOURCE_MESSAGE);
+    }
     let gp = game_path
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| util::game_path(&state));
@@ -5080,6 +5077,9 @@ fn spawn_game_job(
     future: bool,
     target_override: Option<PathBuf>,
 ) -> Result<serde_json::Value, String> {
+    if !VEN_STATES_CONTENT_SOURCE_CONFIGURED {
+        return util::fail_message(VEN_STATES_CONTENT_SOURCE_MESSAGE);
+    }
     let target = match &target_override {
         Some(t) => t.clone(),
         None => {
