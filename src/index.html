@@ -12295,10 +12295,18 @@
         }
 
         // Модальное окно папки
+        let _pendingGameInstallFolder = '';
+
         async function refreshGamePathDisplay(pendingFolder = '') {
             const pathEl = document.getElementById('folderCurrentPath');
             const statusEl = document.getElementById('folderCurrentStatus');
             if (!pathEl || !statusEl) return;
+            const target = pendingFolder || _pendingGameInstallFolder;
+            if (target) {
+                pathEl.textContent = target;
+                statusEl.textContent = 'Папка выбрана как место будущей установки. Игровые файлы появятся после подключения собственного CDN VEN-STATES.';
+                return;
+            }
             try {
                 const saved = window.pywebview?.api?.get_saved_data
                     ? await window.pywebview.api.get_saved_data()
@@ -12310,16 +12318,13 @@
                         : 'GTA San Andreas найден. Папка сохранена и готова к запуску.';
                     return;
                 }
-                const target = pendingFolder || _installFolder || '';
-                if (target) {
-                    pathEl.textContent = target;
-                    statusEl.textContent = 'Папка выбрана как целевое место. Игровые файлы появятся после подключения собственного CDN VEN-STATES.';
-                } else {
-                    pathEl.textContent = 'Путь ещё не выбран';
-                    statusEl.textContent = 'Выбери папку, в которой находится gta_sa.exe';
-                }
+                const target = _installFolder || '';
+                pathEl.textContent = target || 'Путь ещё не выбран';
+                statusEl.textContent = target
+                    ? 'Папка выбрана как место будущей установки. Файлы появятся после подключения CDN VEN-STATES.'
+                    : 'Выбери папку, в которой находится gta_sa.exe';
             } catch (e) {
-                pathEl.textContent = pendingFolder || _installFolder || 'Путь ещё не выбран';
+                pathEl.textContent = _pendingGameInstallFolder || _installFolder || 'Путь ещё не выбран';
                 statusEl.textContent = 'Не удалось прочитать сохранённый путь.';
             }
         }
@@ -15094,7 +15099,8 @@
                     if (result.success) {
                         closeFolderModal();
                         // Обновляем все элементы, связанные с установленной игрой.
-                        _installFolder = result.folder || '';
+                        _installFolder = '';
+                        _pendingGameInstallFolder = '';
                         await loadSavedData();
                         await refreshGamePathDisplay();
                         refreshAirInstallSection();
@@ -15106,6 +15112,7 @@
                     } else if (result.code === 'EMPTY_FOLDER' && result.folder) {
                         closeFolderModal();
                         _installFolder = result.folder;
+                        _pendingGameInstallFolder = result.folder;
                         await refreshGamePathDisplay(result.folder);
                         showNotification('Папка выбрана как место установки: ' + result.folder + '. Скачивание станет доступно после подключения файлов VEN-STATES.', 'info');
                     } else if (result.needs_install) {
