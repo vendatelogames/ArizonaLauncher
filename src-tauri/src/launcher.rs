@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager, State};
 
 // Fixed VEN-STATES RP server endpoint.
 const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
-const VEN_STATES_SERVER_PORT: u16 = 3302;
+const VEN_STATES_SERVER_PORT: u16 = 3699;
 
 
 // ==================== Config Commands ====================
@@ -617,9 +617,9 @@ mod launch_tests {
 
     #[test]
     fn samp_037_args_are_only_standard_connection_arguments() {
-        let args = build_launch_args("188.127.241.74", "3302", "Nick");
+        let args = build_launch_args("188.127.241.74", "3699", "Nick");
         let got: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        assert_eq!(got, vec!["-c", "-h", "188.127.241.74", "-p", "3302", "-n", "Nick"]);
+        assert_eq!(got, vec!["-c", "-h", "188.127.241.74", "-p", "3699", "-n", "Nick"]);
     }
 }
 
@@ -1027,7 +1027,7 @@ fn normalize_servers(server_list: &[serde_json::Value]) -> Vec<serde_json::Value
             "queue": jnum(s, &["queue", "queueLength"], serde_json::json!(0)),
             "recommended": pick(s, &["recomend", "recommended"]).is_some(),
             "ip": jstr(s, &["ip"], "188.127.241.74"),
-            "port": jnum(s, &["port"], serde_json::json!(3302)),
+            "port": jnum(s, &["port"], serde_json::json!(3699)),
             "maxplayers": jnum(s, &["maxplayers", "maxPlayers"], serde_json::json!(1000)),
             "original_icon": icon_url,
             "icon": icon,
@@ -1158,7 +1158,7 @@ async fn fetch_servers_sw(_app: &tauri::AppHandle, state: &AppState) -> serde_js
 async fn fetch_news_sw(_app: &tauri::AppHandle, _state: &AppState) -> serde_json::Value {
     serde_json::json!({
         "success": true,
-        "text": "VEN-STATES RP\nСервер: 188.127.241.74:3302"
+        "text": "VEN-STATES RP\nСервер: 188.127.241.74:3699"
     })
 }
 
