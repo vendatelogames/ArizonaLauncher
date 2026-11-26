@@ -264,8 +264,8 @@ fn registry_install_locations() -> Vec<PathBuf> {
     let mut out = Vec::new();
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         for base in [
-            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-            r"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         ] {
             let Ok(item) = RegKey::predef(hive).open_subkey(base) else { continue };
             for key in item.enum_keys().filter_map(|k| k.ok()) {
