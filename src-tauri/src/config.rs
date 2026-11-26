@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,6 +304,15 @@ impl AppState {
 
         let config_path = documents_path.join("config.json");
         let mut config = Self::load_config(&config_path);
+        // A previous config may point at the Arizona cache. Clear the pointer only;
+        // never delete, move, or modify any files in that existing installation.
+        if let Some(game_dir) = Path::new(&config.game_path).parent() {
+            if crate::launcher::is_arizona_game_folder(game_dir) {
+                log::warn!("Старый путь Arizona RP очищен из конфигурации VEN-STATES; файлы не изменялись");
+                config.game_path.clear();
+                config.launcher_path.clear();
+            }
+        }
         // This launcher has one fixed server; do not restore an Arizona server number.
         config.last_server = 1;
         // VEN-STATES never uses the outdated Arizona Air launcher.
