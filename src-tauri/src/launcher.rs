@@ -421,12 +421,15 @@ pub async fn select_game_path(
     };
     let folder_str = folder.to_string_lossy().to_string();
 
-    if is_arizona_game_folder(&folder) {
-        return util::fail_message("Эта папка относится к Arizona RP. Выбери отдельную папку VEN-STATES — кэш Arizona останется нетронутым.");
-    }
-
-    let game_exe = folder.join("gta_sa.exe");
-    if !game_exe.exists() {
+    // Выбор папки не должен блокироваться только потому, что в ней лежит
+    // существующий кэш Arizona RP. Его можно использовать как источник GTA SA
+    // для прямого запуска, но проверки/установка/починка файлов в нём запрещены.
+    let game_exe = [
+        folder.join("gta_sa.exe"),
+        folder.join("bin").join("gta_sa.exe"),
+        folder.join("bin").join("arizona").join("gta_sa.exe"),
+    ].into_iter().find(|candidate| candidate.is_file());
+    let Some(game_exe) = game_exe else {
         // Папка без игры: маркер для фронта — подтверждение и установка сюда.
         // Запоминаем выбор: install_game_to_folder примет только папку,
         // реально выбранную пользователем в этом нативном диалоге.
@@ -437,9 +440,9 @@ pub async fn select_game_path(
             "success": false,
             "code": "EMPTY_FOLDER",
             "folder": folder_str,
-            "message": "В выбранной папке нет gta_sa.exe"
+            "message": "Папка выбрана, но в ней пока нет gta_sa.exe"
         }));
-    }
+    };
 
     // VEN-STATES запускает GTA SA напрямую: внешний Air-клиент не ищем.
     util::update_config(&state, |cfg| {
@@ -449,11 +452,18 @@ pub async fn select_game_path(
         Ok(())
     })?;
 
+    let protected_install = game_exe.parent().map(is_arizona_game_folder).unwrap_or(false);
     let install_info = get_install_action(state, folder_str.clone())?;
     Ok(serde_json::json!({
         "success": true,
-        "message": format!("Путь установлен: {}", folder_str),
+        "message": if protected_install {
+            "Путь к GTA SA сохранён. Эта папка защищена: лаунчер не будет обновлять или изменять её файлы."
+        } else {
+            "Путь к игре VEN-STATES сохранён"
+        },
         "folder": folder_str,
+        "game_path": game_exe.to_string_lossy().to_string(),
+        "protected_install": protected_install,
         "install_info": install_info
     }))
 }
