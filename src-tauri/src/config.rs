@@ -304,15 +304,8 @@ impl AppState {
 
         let config_path = documents_path.join("config.json");
         let mut config = Self::load_config(&config_path);
-        // Clear a stale Arizona path from the VEN-STATES config without touching its files.
-        let had_arizona_path = Path::new(&config.game_path)
-            .parent()
-            .map(crate::launcher::is_arizona_game_folder)
-            .unwrap_or(false);
-        if had_arizona_path {
-            config.game_path.clear();
-            config.launcher_path.clear();
-        }
+        // Keep the user's selected GTA folder, including a protected Arizona cache.
+        // VEN-STATES blocks updater/install/repair writes to that folder elsewhere.
         // This launcher has one fixed server; do not restore an Arizona server number.
         config.last_server = 1;
         // VEN-STATES never uses the outdated Arizona Air launcher.
@@ -337,8 +330,8 @@ impl AppState {
             arizona_news_revalidating: std::sync::atomic::AtomicBool::new(false),
             arizona_mods_revalidating: std::sync::atomic::AtomicBool::new(false),
         };
-        if strip_bg || had_arizona_path {
-            // Persist config migrations; never delete or move the old game files.
+        if strip_bg {
+            // Persist the wallpaper migration only; preserve all selected game paths.
             state.save_config().ok();
         }
         state
