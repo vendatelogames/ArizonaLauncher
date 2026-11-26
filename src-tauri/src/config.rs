@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,6 +304,8 @@ impl AppState {
 
         let config_path = documents_path.join("config.json");
         let mut config = Self::load_config(&config_path);
+        // Keep the user's selected GTA folder, including a protected Arizona cache.
+        // VEN-STATES blocks updater/install/repair writes to that folder elsewhere.
         // This launcher has one fixed server; do not restore an Arizona server number.
         config.last_server = 1;
         // VEN-STATES never uses the outdated Arizona Air launcher.
@@ -329,7 +331,7 @@ impl AppState {
             arizona_mods_revalidating: std::sync::atomic::AtomicBool::new(false),
         };
         if strip_bg {
-            // Сразу переписываем файл — иначе 2.8 МБ едут на каждое чтение
+            // Persist the wallpaper migration only; preserve all selected game paths.
             state.save_config().ok();
         }
         state

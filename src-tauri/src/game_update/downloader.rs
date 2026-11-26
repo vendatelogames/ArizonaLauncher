@@ -11,7 +11,7 @@ use anyhow::{bail, Context};
 
 use super::manifest::Root;
 
-const UA: &str = "ArizonaLauncher/2.0";
+const UA: &str = "VEN-STATES-Launcher/1.0";
 
 /// Сколько готовы ждать один чанк ответа («залипшее» соединение).
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -70,6 +70,9 @@ pub async fn fetch_manifest(
             return Ok(r);
         }
         Err(e) => log(format!("Основной CDN не ответил ({main}): {e:#}")),
+    }
+    if reserve.trim().is_empty() {
+        bail!("основной VEN-STATES CDN не ответил, резервный CDN не настроен");
     }
     let reserve_res = try_manifest(http, reserve).await;
     if cancel.load(Ordering::Relaxed) {
@@ -374,8 +377,8 @@ mod tests {
     #[test]
     fn file_url_joins_without_double_slash() {
         assert_eq!(
-            file_url("https://pc.az-ins.com/release/", "models/trees.img"),
-            "https://pc.az-ins.com/release/game/models/trees.img"
+            file_url("https://example.invalid/release/", "models/trees.img"),
+            "https://example.invalid/release/game/models/trees.img"
         );
     }
 

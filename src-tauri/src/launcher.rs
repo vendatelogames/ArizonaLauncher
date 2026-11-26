@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager, State};
 
 // Fixed VEN-STATES RP server endpoint.
 const VEN_STATES_SERVER_IP: &str = "188.127.241.74";
-const VEN_STATES_SERVER_PORT: u16 = 3302;
+const VEN_STATES_SERVER_PORT: u16 = 3699;
 
 
 // ==================== Config Commands ====================
@@ -38,6 +38,10 @@ fn get_config_impl(state: &AppState) -> Result<serde_json::Value, String> {
     // он не используется, а при Air его отсутствие покажет кнопка «Установить».
     let paths_ok = !game_path.is_empty()
         && std::path::Path::new(&game_path).exists();
+    let protected_install = std::path::Path::new(&game_path)
+        .parent()
+        .map(is_arizona_game_folder)
+        .unwrap_or(false);
     // Гвард уже отпущен — вложенный lock() внутри безопасен.
     let launcher_version = detect_launcher_version(state);
     Ok(serde_json::json!({
@@ -47,24 +51,29 @@ fn get_config_impl(state: &AppState) -> Result<serde_json::Value, String> {
         "last_server": last_server,
         "launch_params": launch_params,
         "paths_configured": paths_ok,
-        // Реальная версия из папки игры (как get_launcher_version), а не
-        // константа "v8"
+        "protected_install": protected_install,
         "launcher_version": launcher_version
     }))
 }
 
 #[tauri::command]
 pub fn get_saved_data(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let cfg = util::lock_config(&state)?;
-    // Достаточно папки игры: лаунчер Air не обязателен — при нативном запуске
-    // он не используется, а при Air его отсутствие покажет кнопка «Установить».
-    let paths_ok = !cfg.game_path.is_empty();
+    let (nickname, server, game_path) = {
+        let cfg = util::lock_config(&state)?;
+        (cfg.last_nickname.clone(), cfg.last_server, cfg.game_path.clone())
+    };
+    let paths_ok = !game_path.is_empty() && std::path::Path::new(&game_path).exists();
+    let protected_install = std::path::Path::new(&game_path)
+        .parent()
+        .map(is_arizona_game_folder)
+        .unwrap_or(false);
     Ok(serde_json::json!({
         "success": true,
-        "nickname": cfg.last_nickname,
-        "server": cfg.last_server,
-        "game_path": cfg.game_path,
-        "paths_configured": paths_ok
+        "nickname": nickname,
+        "server": server,
+        "game_path": game_path,
+        "paths_configured": paths_ok,
+        "protected_install": protected_install
     }))
 }
 
@@ -80,7 +89,11 @@ pub fn get_init_data(state: State<'_, AppState>) -> Result<serde_json::Value, St
             "nickname": cfg.last_nickname,
             "server": cfg.last_server,
             "game_path": cfg.game_path,
-            "paths_configured": paths_ok
+            "paths_configured": paths_ok,
+            "protected_install": std::path::Path::new(&cfg.game_path)
+                .parent()
+                .map(is_arizona_game_folder)
+                .unwrap_or(false)
         }
     }))
 }
@@ -222,6 +235,18 @@ fn find_launcher_exe(folder: &std::path::Path) -> Option<(PathBuf, u32)> {
     best
 }
 
+/// Detect known Arizona install folders so VEN-STATES never writes into their cache.
+pub(crate) fn is_arizona_game_folder(folder: &Path) -> bool {
+    // Check the selected directory and a few parent levels: some old clients
+    // store gta_sa.exe below a bin/ subfolder while their launcher sits above it.
+    folder.ancestors().take(4).any(|ancestor| {
+        let named_arizona = ancestor.file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase().contains("arizona"))
+            .unwrap_or(false);
+        named_arizona || find_launcher_exe(ancestor).is_some()
+    })
+}
+
 /// Мажорная версия лаунчера → "v6" / "v7" / "v8" (неизвестное и новее 8 → "v8").
 fn major_to_version(major: u32) -> &'static str {
     match major {
@@ -231,21 +256,20 @@ fn major_to_version(major: u32) -> &'static str {
     }
 }
 
-/// gta_sa.exe в папке: сам корень либо bin\arizona (раскладки старого лаунчера и нашей установки).
+/// Ищет GTA SA в выбранной папке или в стандартной подпапке bin.
 fn find_gta_in(dir: &Path) -> Option<PathBuf> {
-    let gta = dir.join("gta_sa.exe");
-    if gta.exists() {
-        return Some(gta);
+    if is_arizona_game_folder(dir) {
+        return None;
     }
-    let gta = dir.join("bin").join("arizona").join("gta_sa.exe");
-    if gta.exists() {
-        return Some(gta);
+    for candidate in [dir.join("gta_sa.exe"), dir.join("bin").join("gta_sa.exe")] {
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
     None
 }
 
-/// Папки установок из реестра: ключи Uninstall, у которых «Arizona» в имени
-/// ключа или DisplayName, берём InstallLocation.
+/// Ищем только записи установок GTA San Andreas, не Arizona.
 fn registry_install_locations() -> Vec<PathBuf> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -256,29 +280,14 @@ fn registry_install_locations() -> Vec<PathBuf> {
             r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
             r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         ] {
-            let Ok(item) = RegKey::predef(hive).open_subkey(base) else {
-                continue;
-            };
+            let Ok(item) = RegKey::predef(hive).open_subkey(base) else { continue };
             for key in item.enum_keys().filter_map(|k| k.ok()) {
-                let sub = key.to_lowercase();
-                if !sub.contains("arizona") {
-                    // В имени ключа Arizona нет — проверяем DisplayName
-                    let Ok(k) = item.open_subkey(&key) else { continue };
-                    let display: String = k
-                        .get_value::<String, _>("DisplayName")
-                        .unwrap_or_default()
-                        .to_lowercase();
-                    if !display.contains("arizona") {
-                        continue;
-                    }
-                    if let Ok(loc) = k.get_value::<String, _>("InstallLocation") {
-                        if !loc.trim().is_empty() {
-                            out.push(PathBuf::from(loc.trim()));
-                        }
-                    }
+                let Ok(k) = item.open_subkey(&key) else { continue };
+                let display: String = k.get_value("DisplayName").unwrap_or_default();
+                let display = display.to_lowercase();
+                if !(display.contains("grand theft auto san andreas") || display.contains("gta san andreas")) {
                     continue;
                 }
-                let Ok(k) = item.open_subkey(&key) else { continue };
                 if let Ok(loc) = k.get_value::<String, _>("InstallLocation") {
                     if !loc.trim().is_empty() {
                         out.push(PathBuf::from(loc.trim()));
@@ -300,37 +309,21 @@ fn drive_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Скан корней дисков: папки первого уровня с «arizona» в имени (и подпапки
-/// на один уровень), с общим дедлайном, чтобы не морозить UI на больших дисках.
+/// Сканирует папки верхнего уровня на дисках и ищет gta_sa.exe.
+/// Ограничение по времени не даёт зависнуть интерфейсу на больших дисках.
 fn scan_drive_roots(deadline: std::time::Instant) -> Option<PathBuf> {
     for root in drive_roots() {
         let Ok(entries) = fs::read_dir(&root) else { continue };
-        for e in entries.flatten() {
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let dir = e.path();
-            let name = e.file_name().to_string_lossy().to_lowercase();
-            if !name.contains("arizona") {
-                continue;
-            }
-            if let Some(g) = find_gta_in(&dir) {
-                return Some(g);
-            }
-            // Один уровень вглубь: G:\...\Arizona RP\...\gta_sa.exe
-            if let Ok(subs) = fs::read_dir(&dir) {
-                for s in subs.flatten() {
-                    if std::time::Instant::now() > deadline {
-                        return None;
-                    }
-                    if !s.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        continue;
-                    }
-                    if let Some(g) = find_gta_in(&s.path()) {
-                        return Some(g);
+        for entry in entries.flatten() {
+            if std::time::Instant::now() > deadline { return None; }
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let dir = entry.path();
+            if let Some(game) = find_gta_in(&dir) { return Some(game); }
+            if let Ok(subdirs) = fs::read_dir(&dir) {
+                for sub in subdirs.flatten() {
+                    if std::time::Instant::now() > deadline { return None; }
+                    if sub.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        if let Some(game) = find_gta_in(&sub.path()) { return Some(game); }
                     }
                 }
             }
@@ -339,46 +332,28 @@ fn scan_drive_roots(deadline: std::time::Instant) -> Option<PathBuf> {
     None
 }
 
-/// Ищет gta_sa.exe (старый лаунчер → реестр → корни дисков) без касания конфига,
-/// чтобы гонять в блокирующем потоке. Возвращает (gta_sa.exe, launcher-клиент).
+/// Автоопределение обычной установки GTA San Andreas.
 fn auto_detect_game_find() -> Option<(PathBuf, Option<PathBuf>)> {
     let home = dirs::home_dir().unwrap_or_default();
-    let game_subpath = std::path::PathBuf::from("bin").join("arizona");
-
-    let base_candidates: Vec<PathBuf> = vec![
-        home.join("AppData").join("Local").join("Programs").join("Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files/Arizona Games Launcher"),
-        PathBuf::from("C:/Program Files (x86)/Arizona Games Launcher"),
+    let candidates = [
+        home.join("Games/GTA San Andreas"),
+        PathBuf::from("C:/Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files/Rockstar Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files (x86)/Rockstar Games/GTA San Andreas"),
+        PathBuf::from("C:/Program Files (x86)/Steam/steamapps/common/Grand Theft Auto San Andreas"),
     ];
-
-    for base in &base_candidates {
-        let game_dir = base.join(&game_subpath);
-        if let Some(gta) = find_gta_in(&game_dir) {
-            return Some((gta.clone(), find_launcher_exe(&game_dir).map(|(p, _)| p)));
-        }
+    for dir in candidates {
+        if let Some(game) = find_gta_in(&dir) { return Some((game, None)); }
     }
 
-    // Реестр: ключи Uninstall со словом Arizona → InstallLocation
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     for base in registry_install_locations() {
-        // InstallLocation может указывать до корня установки либо сразу до клиента
-        for dir in [base.join(&game_subpath), base] {
-            if let Some(gta) = find_gta_in(&dir) {
-                let dir = gta.parent().unwrap().to_path_buf();
-                return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
+        if let Some(game) = find_gta_in(&base) {
+            return Some((game, None));
         }
+        if std::time::Instant::now() > deadline { return None; }
     }
-
-    // Корни дисков: G:\Arizona Games Launcher\... (у других игроков игра может лежать где угодно)
-    if let Some(gta) = scan_drive_roots(deadline) {
-        let dir = gta.parent().unwrap().to_path_buf();
-        return Some((gta, find_launcher_exe(&dir).map(|(p, _)| p)));
-    }
-    None
+    scan_drive_roots(deadline).map(|game| (game, None))
 }
 
 #[tauri::command]
@@ -391,9 +366,11 @@ pub async fn auto_detect_paths(state: State<'_, AppState>) -> Result<serde_json:
     if let Some((game, launcher)) = &found {
         util::update_config(&state, |cfg| {
             cfg.game_path = game.to_string_lossy().to_string();
+            cfg.launcher_path.clear();
             if let Some(l) = launcher {
                 cfg.launcher_path = l.to_string_lossy().to_string();
             }
+            cfg.launch_method = "native".to_string();
             Ok(())
         })?;
         state.save_config()?;
@@ -408,31 +385,27 @@ pub async fn auto_detect_paths(state: State<'_, AppState>) -> Result<serde_json:
     }))
 }
 
-/// Ручная установка путей (легаси-команда, фронт её не зовёт). Те же ворота,
-/// что у select_game_path/auto_detect: game должен существовать как gta_sa.exe,
-/// лаунчер — по ресурсу версии (util::is_arizona_launcher, как в find_launcher_exe).
+/// Совместимая команда старого фронтенда: сохраняет только путь GTA SA.
+/// Параметр launcher оставлен в сигнатуре IPC, но больше не используется.
 #[tauri::command(async)]
-pub fn set_game_paths(state: State<'_, AppState>, game: String, launcher: String) -> Result<serde_json::Value, String> {
+pub fn set_game_paths(state: State<'_, AppState>, game: String, _launcher: String) -> Result<serde_json::Value, String> {
     let game_exe = std::path::Path::new(&game);
-    let is_game_exe = game_exe
-        .file_name()
+    let is_game_exe = game_exe.file_name()
         .map(|n| n.to_string_lossy().eq_ignore_ascii_case("gta_sa.exe"))
         .unwrap_or(false);
     if !is_game_exe || !game_exe.is_file() {
         return util::fail_message("Путь к игре должен указывать на существующий gta_sa.exe");
     }
-    if !launcher.is_empty() {
-        let launcher_exe = std::path::Path::new(&launcher);
-        if !launcher_exe.is_file() || !util::is_arizona_launcher(launcher_exe) {
-            return util::fail_message("Путь к лаунчеру должен указывать на exe лаунчера Arizona (проверка по ресурсу версии)");
-        }
+    if game_exe.parent().map(is_arizona_game_folder).unwrap_or(false) {
+        return util::fail_message("Нельзя использовать папку Arizona RP. Укажи отдельную установку VEN-STATES.");
     }
     util::update_config(&state, |cfg| {
         cfg.game_path = game;
-        cfg.launcher_path = launcher;
+        cfg.launcher_path.clear();
+        cfg.launch_method = "native".to_string();
         Ok(())
     })?;
-    Ok(serde_json::json!({"success": true, "message": "Paths set"}))
+    Ok(serde_json::json!({"success": true, "message": "VEN-STATES game path saved"}))
 }
 
 /// Нативный диалог выбора папки игры: проверяем gta_sa.exe, сохраняем пути,
@@ -461,8 +434,15 @@ pub async fn select_game_path(
     };
     let folder_str = folder.to_string_lossy().to_string();
 
-    let game_exe = folder.join("gta_sa.exe");
-    if !game_exe.exists() {
+    // Выбор папки не должен блокироваться только потому, что в ней лежит
+    // существующий кэш Arizona RP. Его можно использовать как источник GTA SA
+    // для прямого запуска, но проверки/установка/починка файлов в нём запрещены.
+    let game_exe = [
+        folder.join("gta_sa.exe"),
+        folder.join("bin").join("gta_sa.exe"),
+        folder.join("bin").join("arizona").join("gta_sa.exe"),
+    ].into_iter().find(|candidate| candidate.is_file());
+    let Some(game_exe) = game_exe else {
         // Папка без игры: маркер для фронта — подтверждение и установка сюда.
         // Запоминаем выбор: install_game_to_folder примет только папку,
         // реально выбранную пользователем в этом нативном диалоге.
@@ -473,25 +453,30 @@ pub async fn select_game_path(
             "success": false,
             "code": "EMPTY_FOLDER",
             "folder": folder_str,
-            "message": "В выбранной папке нет gta_sa.exe"
+            "message": "Папка выбрана, но в ней пока нет gta_sa.exe"
         }));
-    }
+    };
 
-    // Сохраняем пути: лаунчер ищем по ресурсу версии среди всех exe папки
-    let launcher_exe = find_launcher_exe(&folder)
-        .map(|(p, _)| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // VEN-STATES запускает GTA SA напрямую: внешний Air-клиент не ищем.
     util::update_config(&state, |cfg| {
         cfg.game_path = game_exe.to_string_lossy().to_string();
-        cfg.launcher_path = launcher_exe;
+        cfg.launcher_path.clear();
+        cfg.launch_method = "native".to_string();
         Ok(())
     })?;
 
+    let protected_install = game_exe.parent().map(is_arizona_game_folder).unwrap_or(false);
     let install_info = get_install_action(state, folder_str.clone())?;
     Ok(serde_json::json!({
         "success": true,
-        "message": format!("Путь установлен: {}", folder_str),
+        "message": if protected_install {
+            "Путь к GTA SA сохранён. Эта папка защищена: лаунчер не будет обновлять или изменять её файлы."
+        } else {
+            "Путь к игре VEN-STATES сохранён"
+        },
         "folder": folder_str,
+        "game_path": game_exe.to_string_lossy().to_string(),
+        "protected_install": protected_install,
         "install_info": install_info
     }))
 }
@@ -500,20 +485,8 @@ pub async fn select_game_path(
 
 /// Python `get_launcher_version`: v8 > v7 > v6 среди exe в папке игры
 /// (по ресурсу версии, не по имени файла), иначе v8.
-fn detect_launcher_version(state: &AppState) -> String {
-    let Some(game_dir) = util::game_dir(state) else {
-        return "v8".to_string();
-    };
-    let plugins_dir = game_dir.join("preloading_plugins");
-    let has_plugins = std::fs::read_dir(&plugins_dir)
-        .map(|mut rd| rd.next().is_some())
-        .unwrap_or(false);
-    if has_plugins {
-        if let Some((_, major)) = find_launcher_exe(&game_dir) {
-            return major_to_version(major).to_string();
-        }
-    }
-    "v8".to_string()
+fn detect_launcher_version(_state: &AppState) -> String {
+    "VEN-STATES".to_string()
 }
 
 /// Python `kill_all_launchers`: убивает точные имена exe (не substring — чтобы не убить себя).
@@ -562,146 +535,13 @@ fn sanitize_nickname(nick: &str) -> String {
     stripped.chars().take(20).collect()
 }
 
-/// Python: валидация CDN, формат `\d+,\d+,\d+`, иначе fallback "1,1,1".
-fn validate_cdn(raw: &str) -> String {
-    let re = match regex::Regex::new(r"^\d+,\d+,\d+$") {
-        Ok(r) => r,
-        Err(_) => return "1,1,1".to_string(),
-    };
-    if re.is_match(raw) {
-        raw.to_string()
-    } else {
-        log::warn!("launch_game: некорректный CDN '{}', использую '1,1,1'", raw);
-        "1,1,1".to_string()
-    }
-}
-
-// ==================== Авто-CDN (как в оригинальном лаунчере) ====================
-//
-// Пары зеркал [main, reserve] по трём группам; живость — GET <зеркало>/ping.json
-// с валидацией hash (handoff/original-launcher/02 §«Пинг зеркал»). Индексы уходят
-// в игру флагом `-cdn i,i,i`: 0 = main, 1 = reserve.
-
-const PING_HASH: &str = "5aa4731d5d84e09e2f7e7141e560104f";
-const CDN_AUTO_GROUPS: [&[&str]; 3] = [
-    // [контент]: main, reserve
-    &["https://cdn.azresources.cloud", "https://resources.azgames-cdn.ru"],
-    // [звук]
-    &["https://cdn.azsounds.net", "https://azgamesound-cdn.ru"],
-    // [серверное API]
-    &["https://server-api.arizona.games", "https://server-api.azgames-cdn.ru"],
-];
-const CDN_AUTO_TTL: std::time::Duration = std::time::Duration::from_secs(600); // 10 мин
-
-/// Живость зеркала: ping.json отвечает 200 и содержит наш hash.
-/// В ответе ~220 КБ болтовни (plug_text) — читаем целиком, лимит по таймауту.
-async fn ping_mirror(base: &str) -> bool {
-    let url = format!("{}/ping.json", base.trim_end_matches('/'));
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("ArizonaLauncher/2.0"),
-    );
-    let resp = match util::http_request(
-        reqwest::Method::GET,
-        &url,
-        headers,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    if resp.status() != reqwest::StatusCode::OK {
-        return false;
-    }
-    match resp.bytes().await {
-        Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .and_then(|v| {
-                v.get("hash")
-                    .and_then(|h| h.as_str())
-                    .map(|h| h == PING_HASH)
-            })
-            .unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
-/// Выбор индекса группы: main жив → "0", иначе reserve жив → "1",
-/// иначе "0" (фоллбэк оригинала —main, даже если пинг не прошёл).
-fn pick_cdn_index(main_alive: bool, reserve_alive: bool) -> &'static str {
-    if main_alive {
-        "0"
-    } else if reserve_alive {
-        "1"
-    } else {
-        "0"
-    }
-}
-
-/// Актуальное значение авто-CDN: кэш 10 мин, иначе пингуем все 6 зеркал
-/// параллельно (худший случай ~5 с). Кэш в AppState.cdn_auto_cache.
-async fn resolve_cdn_auto(state: &State<'_, AppState>) -> String {
-    if let Ok(cache) = state.cdn_auto_cache.lock() {
-        if let Some(c) = cache.as_ref() {
-            if c.ts.elapsed() < CDN_AUTO_TTL {
-                return c.value.clone();
-            }
-        }
-    }
-    let g = CDN_AUTO_GROUPS;
-    let (a0, a1, b0, b1, c0, c1) = tokio::join!(
-        ping_mirror(g[0][0]),
-        ping_mirror(g[0][1]),
-        ping_mirror(g[1][0]),
-        ping_mirror(g[1][1]),
-        ping_mirror(g[2][0]),
-        ping_mirror(g[2][1]),
-    );
-    let value = format!(
-        "{},{},{}",
-        pick_cdn_index(a0, a1),
-        pick_cdn_index(b0, b1),
-        pick_cdn_index(c0, c1)
-    );
-    log::info!(
-        "resolve_cdn_auto: {} (cdn main/reserve: {}/{} sound: {}/{} api: {}/{})",
-        value,
-        a0, a1, b0, b1, c0, c1
-    );
-    if let Ok(mut cache) = state.cdn_auto_cache.lock() {
-        *cache = Some(crate::config::CdnAutoCache {
-            ts: std::time::Instant::now(),
-            value: value.clone(),
-        });
-    }
-    value
-}
-
-/// Включён ли авто-CDN в настройках (launcher_settings.extra.cdn_auto).
-fn cdn_auto_enabled(state: &State<'_, AppState>) -> bool {
-    state
-        .config
-        .lock()
-        .ok()
-        .and_then(|c| {
-            c.launcher_settings
-                .extra
-                .get("cdn_auto")
-                .and_then(|v| v.as_bool())
-        })
-        .unwrap_or(false)
-}
-
-/// Ручная проверка зеркал из настроек (кнопка «Проверить» рядом с «Авто»).
+/// Проверка CDN-переключателя оставлена для совместимости фронта.
+/// Arizona CDN-пинги отключены; игровой запуск не использует -cdn.
 #[tauri::command]
 pub async fn get_cdn_auto(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let cdn = resolve_cdn_auto(&state).await;
-    Ok(serde_json::json!({"success": true, "cdn": cdn}))
+    Ok(serde_json::json!({"success": true, "cdn": "0,0,0", "supported": false}))
 }
 
 /// Паритет с оригиналом (03 §1, 04 §1): при запуске игры пишем ник и память
@@ -724,76 +564,17 @@ fn write_samp_registry(nickname: &str, mem_mb: u32) {
 
 /// Собирает аргументы запуска VEN-STATES. Маркер проекта Arizona намеренно
 /// не передаётся: этот лаунчер подключает игру к собственному серверу VEN-STATES.
-fn build_launch_args(
-    native: bool,
-    is_v7plus: bool,
-    srv_ip: &str,
-    srv_port: &str,
-    nick: &str,
-    params: &crate::config::LaunchParams,
-) -> Vec<String> {
-    let cdn_value = validate_cdn(&params.cdn);
-    let mut cmd: Vec<String> = vec![
+/// Стандартные аргументы SA-MP 0.3.7. Не передаём параметры Arizona Air.
+fn build_launch_args(srv_ip: &str, srv_port: &str, nick: &str) -> Vec<String> {
+    vec![
         "-c".to_string(),
         "-h".to_string(),
         srv_ip.to_string(),
         "-p".to_string(),
         srv_port.to_string(),
-        "-mem".to_string(),
-        params.memory.to_string(),
         "-n".to_string(),
         nick.to_string(),
-    ];
-    if native {
-        cmd.push("-cdn".to_string());
-        cmd.push(cdn_value.clone());
-    }
-    // Общие параметры графики и управления; Arizona project marker is omitted.
-    let common_flags: [(&bool, &str); 8] = [
-        (&params.widescreen, "-widescreen"),
-        (&params.texture_mode, "-t"),
-        (&params.color_depth_16, "-16bpp"),
-        (&params.allow_hdr, "-allow_hdr"),
-        (&params.enable_grass, "-enable_grass"),
-        (&params.ldo, "-ldo"),
-        (&params.auth_cef_enable, "-auth_cef_enable"),
-        (&params.autologin, "-x"),
-    ];
-    for (flag_on, name) in &common_flags {
-        if **flag_on {
-            cmd.push(name.to_string());
-        }
-    }
-
-    // Оконный режим: -window и -old_window взаимоисключающие
-    if is_v7plus && params.old_window {
-        cmd.push("-old_window".to_string());
-    } else if params.window_mode {
-        cmd.push("-window".to_string());
-    }
-
-    // Доп. флаги v7+
-    if is_v7plus {
-        let v7plus_flags: [(&bool, &str); 6] = [
-            (&params.enable_new_grass, "-enable_new_grass"),
-            (&params.use_d3dx9_43, "-use_d3dx9_43"),
-            (&params.show_dialog_ids, "-show_dialog_ids"),
-            (&params.offcef, "-offcef"),
-            (&params.modern_scale, "-modern_scale"),
-            (&params.trees_new, "-trees_new"),
-        ];
-        for (flag_on, name) in &v7plus_flags {
-            if **flag_on {
-                cmd.push(name.to_string());
-            }
-        }
-    }
-
-    if !native {
-        cmd.push("-cdn".to_string());
-        cmd.push(cdn_value);
-    }
-    cmd
+    ]
 }
 
 #[cfg(test)]
@@ -847,53 +628,19 @@ mod config_deadlock_tests {
 mod launch_tests {
     use super::*;
 
-    /// Дефолтные параметры: autologin → "-x", window_mode → "-window".
     #[test]
-    fn native_args_order() {
-        let p = crate::config::LaunchParams::default();
-        let args = build_launch_args(true, true, "host.example", "7777", "Nick", &p);
+    fn samp_037_args_are_only_standard_connection_arguments() {
+        let args = build_launch_args("188.127.241.74", "3699", "Nick");
         let got: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            got,
-            vec![
-                "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-cdn", "1,1,1", "-x", "-window"
-            ]
-        );
-    }
-
-    #[test]
-    fn air_args_order() {
-        let p = crate::config::LaunchParams::default();
-        let args = build_launch_args(false, true, "host.example", "7777", "Nick", &p);
-        let got: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            got,
-            vec![
-                "-c", "-h", "host.example", "-p", "7777", "-mem", "4096", "-n", "Nick",
-                "-x", "-window", "-cdn", "1,1,1"
-            ]
-        );
+        assert_eq!(got, vec!["-c", "-h", "188.127.241.74", "-p", "3699", "-n", "Nick"]);
     }
 }
 
-/// Быстрый чек ключевых файлов перед запуском (пункт 3 плана):
-/// только наличие и ненулевой размер — без MD5, миллисекунды.
-/// Список покрывает ядро установки по манифесту CDN (exe, крупные .img,
-/// SAMP, фронтенд): частично скачанная или порушенная папка поймается.
-/// Возвращает относительные пути отсутствующих файлов.
+/// Проверяем только обязательный исполняемый файл GTA SA.
+/// Набор дополнительных файлов зависит от конкретной сборки VEN-STATES
+/// и будет проверяться собственным манифестом, когда подключим CDN проекта.
 fn quick_game_check(game_dir: &std::path::Path) -> Vec<String> {
-    const CRITICAL: &[&str] = &[
-        "gta_sa.exe",
-        "arizona.asi",
-        "anim/cuts.img",
-        "models/gta3.img",
-        "models/peds.img",
-        "models/vehs_7.img",
-        "SAMP/SAMP.img",
-        "frontend.zip",
-        "data/script/script.img",
-    ];
+    const CRITICAL: &[&str] = &["gta_sa.exe"];
     CRITICAL
         .iter()
         .filter(|rel| {
@@ -962,18 +709,8 @@ pub async fn start_game(
         None => util::lock_config(&state)?.launch_params.clone(),
     };
 
-    // Авто-CDN: зеркала пингуются сами (кэш 10 мин), пользователь не выбирает
-    if cdn_auto_enabled(&state) {
-        params.cdn = resolve_cdn_auto(&state).await;
-    }
-
-    let launcher_ver = detect_launcher_version(&state);
-    // При нативном запуске поддержка только v8 → все доп. флаги без проверок
-    let is_v7plus = native || launcher_ver == "v7" || launcher_ver == "v8";
-    let cmd = build_launch_args(native, is_v7plus, &srv_ip, &srv_port, &nickname, &params);
-
-    // kill_all_launchers перед стартом (в Python — синхронно с sleep 1s)
-    tokio::task::spawn_blocking(kill_all_launchers).await.ok();
+    // VEN-STATES не использует CDN-маршрутизацию Arizona.
+    let cmd = build_launch_args(&srv_ip, &srv_port, &nickname);
 
     let (exe, cwd) = if native {
         // Реестр — паритет с оригиналом (03 §1, 04): SA-MP читает оттуда ник
@@ -1111,7 +848,7 @@ fn icon_cache_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(dirs::cache_dir)
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
-    let dir = base.join("ArizonaLauncher").join("icons");
+    let dir = base.join("VEN-STATES Launcher").join("icons");
     std::fs::create_dir_all(&dir).ok();
     dir
 }
@@ -1302,8 +1039,8 @@ fn normalize_servers(server_list: &[serde_json::Value]) -> Vec<serde_json::Value
             "online": jnum(s, &["online", "playersOnline"], serde_json::json!(0)),
             "queue": jnum(s, &["queue", "queueLength"], serde_json::json!(0)),
             "recommended": pick(s, &["recomend", "recommended"]).is_some(),
-            "ip": jstr(s, &["ip"], &format!("server{}.arizona-rp.com", id_str)),
-            "port": jnum(s, &["port"], serde_json::json!(7777)),
+            "ip": jstr(s, &["ip"], "188.127.241.74"),
+            "port": jnum(s, &["port"], serde_json::json!(3699)),
             "maxplayers": jnum(s, &["maxplayers", "maxPlayers"], serde_json::json!(1000)),
             "original_icon": icon_url,
             "icon": icon,
@@ -1431,19 +1168,11 @@ async fn fetch_servers_sw(_app: &tauri::AppHandle, state: &AppState) -> serde_js
 
 /// stale-while-revalidate для новостей: диск → сразу + фоновое обновление,
 /// иначе — сеть (первый запуск).
-async fn fetch_news_sw(app: &tauri::AppHandle, state: &AppState) -> serde_json::Value {
-    if let Some(text) = read_disk_news(state) {
-        spawn_news_revalidate(app);
-        log::info!("news: дисковый кэш отдан мгновенно ({} байт)", text.len());
-        return serde_json::json!({"success": true, "text": text});
-    }
-    let r = fetch_launcher_news().await;
-    if r.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-        if let Some(text) = r.get("text").and_then(|v| v.as_str()) {
-            write_disk_news(state, text);
-        }
-    }
-    r
+async fn fetch_news_sw(_app: &tauri::AppHandle, _state: &AppState) -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "text": "VEN-STATES RP\nСервер: 188.127.241.74:3699"
+    })
 }
 
 /// Тело `get_servers`: кэш 60s, ETag/If-Modified-Since, 304 → кэш, нормализация, prefetch.
@@ -1500,9 +1229,9 @@ pub async fn get_servers_and_news(app: tauri::AppHandle, state: State<'_, AppSta
 /// перебор держал загрузку до ~60 с (3 × 20 с таймаут) — теперь worst case 20 с.
 async fn fetch_launcher_news() -> serde_json::Value {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/updatenews.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/updatenews.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updatenews.txt",
     ];
 
     let fetch_one = |url: &'static str| async move {
@@ -1589,10 +1318,6 @@ pub fn save_read_news_ids(state: State<'_, AppState>, ids: Vec<String>) -> Resul
 // ревалидация не чаще 30 мин (новости меняются редко).
 
 const ARIZONA_NEWS_TTL_MS: u128 = 30 * 60 * 1000;
-const ARIZONA_NEWS_URLS: [&str; 2] = [
-    "https://api.arizona-five.com/",
-    "https://arz-api-reserve.s-amp.com/",
-];
 
 /// Достать новости проекта arizona из ответа launcher/projects.
 fn parse_arizona_projects(body: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
@@ -1622,39 +1347,6 @@ fn parse_arizona_projects(body: &serde_json::Value) -> Option<Vec<serde_json::Va
 
 /// Сеть: launcher/projects с main → при пустом/битом ответе Reserve.
 async fn fetch_arizona_news_network() -> Option<Vec<serde_json::Value>> {
-    for base in ARIZONA_NEWS_URLS {
-        let url = format!("{base}launcher/projects");
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-        );
-        let resp = match util::http_request(
-            reqwest::Method::GET,
-            &url,
-            headers,
-            std::time::Duration::from_secs(20),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if resp.status() != reqwest::StatusCode::OK {
-            continue;
-        }
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let body: serde_json::Value = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Some(news) = parse_arizona_projects(&body) {
-            return Some(news);
-        }
-    }
     None
 }
 
@@ -1694,28 +1386,10 @@ fn spawn_arizona_news_revalidate(app: &tauri::AppHandle) {
 /// кэше — сеть синхронно.
 #[tauri::command]
 pub async fn get_arizona_news(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(v) = read_cache_file(&state, "arizona_news.json") {
-        if let Some(news) = v.get("news").cloned() {
-            spawn_arizona_news_revalidate(&app);
-            return Ok(serde_json::json!({"success": true, "news": news}));
-        }
-    }
-    match fetch_arizona_news_network().await {
-        Some(news) => {
-            write_cache_file(
-                &state,
-                "arizona_news.json",
-                &serde_json::json!({"ts_ms": now_ms(), "news": news}),
-            );
-            Ok(serde_json::json!({"success": true, "news": news}))
-        }
-        None => util::fail_message(
-            "Не удалось загрузить новости Arizona RP (проверьте интернет)".to_string(),
-        ),
-    }
+    Ok(serde_json::json!({"success": true, "news": []}))
 }
 
 // ==================== Каталог модов из оригинального лаунчера Аризоны ====================
@@ -1727,10 +1401,6 @@ pub async fn get_arizona_news(
 // состояние — config.installed_arizona_mods (отдельное поле: фронтовые
 // save_launcher_settings затирают extra целиком).
 
-const ARIZONA_MODS_URLS: [&str; 2] = [
-    "https://api-samp.arizona-five.com/launcher/mods/arizona",
-    "https://arz-api-reserve.s-amp.com/launcher/mods/arizona",
-];
 const ARIZONA_MODS_TTL_MS: u128 = 30 * 60 * 1000;
 const ARIZONA_MOD_MAX_FILE: u64 = 64 * 1024 * 1024; // 64 МБ на файл
 const ARIZONA_MOD_TOTAL_MAX: u64 = 512 * 1024 * 1024; // 512 МБ на мод
@@ -1842,56 +1512,6 @@ async fn download_mod_file(url_main: String, url_reserve: String, expected: &str
 
 /// Сеть: каталог модов (main → reserve), слитый {topOfMonth + mods} дедупом по id.
 async fn fetch_arizona_mods_network() -> Option<serde_json::Value> {
-    for base in ["https://api-samp.arizona-five.com/launcher/mods", "https://arz-api-reserve.s-amp.com/launcher/mods"] {
-        let url = format!("{base}/arizona");
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::USER_AGENT,
-            reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-        );
-        let resp = match util::http_request(
-            reqwest::Method::GET,
-            &url,
-            headers,
-            std::time::Duration::from_secs(20),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if resp.status() != reqwest::StatusCode::OK {
-            continue;
-        }
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let body: serde_json::Value = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let top = body.get("topOfMonth").cloned().unwrap_or(serde_json::Value::Null);
-        let mods = body.get("mods").cloned().unwrap_or(serde_json::Value::Null);
-        if top.is_null() && mods.is_null() {
-            continue;
-        }
-        // Слить, дедуп по id (topOfMonth частично дублирует mods)
-        let mut seen = std::collections::HashSet::new();
-        let mut all = Vec::new();
-        for item in [&top, &mods] {
-            if let Some(arr) = item.as_array() {
-                for m in arr {
-                    if let Some(id) = m.get("id").and_then(|v| v.as_i64()) {
-                        if seen.insert(id) {
-                            all.push(m.clone());
-                        }
-                    }
-                }
-            }
-        }
-        return Some(serde_json::Value::Array(all));
-    }
     None
 }
 
@@ -1987,31 +1607,10 @@ pub fn check_moonloader(state: State<'_, AppState>) -> Result<serde_json::Value,
 /// Каталог модов Аризоны: диск мгновенно (+ фоновая ревалидация), пусто — сеть.
 #[tauri::command]
 pub async fn get_arizona_mods(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    if let Some(v) = read_cache_file(&state, "arizona_mods.json") {
-        // Только массив: битая форма (объект после правки формата) = стейл
-        if let Some(mods) = v.get("mods").cloned() {
-            if mods.is_array() {
-                spawn_arizona_mods_revalidate(&app);
-                return Ok(serde_json::json!({"success": true, "mods": mods}));
-            }
-        }
-    }
-    match fetch_arizona_mods_network().await {
-        Some(mods) => {
-            write_cache_file(
-                &state,
-                "arizona_mods.json",
-                &serde_json::json!({"ts_ms": now_ms(), "mods": mods}),
-            );
-            Ok(serde_json::json!({"success": true, "mods": mods}))
-        }
-        None => util::fail_message(
-            "Не удалось загрузить каталог модов Аризоны (проверьте интернет)".to_string(),
-        ),
-    }
+    Ok(serde_json::json!({"success": true, "mods": []}))
 }
 
 /// Установленные моды Аризоны (для рендера состояния на фронте).
@@ -2027,31 +1626,8 @@ static AZ_MOD_TREE_CACHE: std::sync::Mutex<Option<std::collections::HashMap<Stri
     std::sync::Mutex::new(None);
 
 /// Дерево мода из сети → плоское дерево с валидацией путей.
-async fn fetch_mod_tree(mod_id: i64) -> Result<Vec<(String, String, u64, i64)>, String> {
-    let json_url = format!("https://api-samp.arizona-five.com/launcher/mods/arizona/{mod_id}");
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static("Mozilla/5.0"),
-    );
-    let resp = util::http_request(reqwest::Method::GET, &json_url, headers, std::time::Duration::from_secs(20))
-        .await
-        .map_err(|e| format!("Не удалось получить дерево мода: {e}"))?;
-    if resp.status() != reqwest::StatusCode::OK {
-        return Err(format!("Мод {mod_id} недоступен (HTTP {})", resp.status()));
-    }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let tree: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("Битый JSON мода: {e}"))?;
-    let data = tree
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "В дереве мода нет файлов".to_string())?;
-    let mut files: Vec<(String, String, u64, i64)> = Vec::new();
-    flatten_mod_tree(data, "", &mut files);
-    for (rel, _, _, _) in &files {
-        validate_mod_rel_path(rel)?;
-    }
-    Ok(files)
+async fn fetch_mod_tree(_mod_id: i64) -> Result<Vec<(String, String, u64, i64)>, String> {
+    Err("Каталог модов VEN-STATES ещё не подключён".to_string())
 }
 
 /// Дерево мода с кэшем (ключ id:version — версия из меты каталога).
@@ -2101,110 +1677,13 @@ pub async fn check_arizona_mod(
 /// (md5) → в папку игры. Прогресс — событие `arizona-mod-progress`.
 #[tauri::command(async)]
 pub async fn install_arizona_mod(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    mod_id: i64,
-    version: Option<String>,
-    title: Option<String>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
+    _mod_id: i64,
+    _version: Option<String>,
+    _title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use tauri::Emitter;
-    let _job = match HeavyJobGuard::try_acquire(&state.heavy_job_busy) {
-        Ok(g) => g,
-        Err(e) => return util::fail_message(e),
-    };
-    // Обновление/установка игры уже идёт? Папку игры не трогаем параллельно.
-    if let Ok(g) = state.game_update_cancel.lock() {
-        if g.is_some() {
-            return util::fail_message("Идёт установка/обновление игры — подожди завершения".to_string());
-        }
-    }
-    let game_dir = util::game_dir(&state).ok_or_else(|| "Путь к игре не установлен".to_string())?;
-
-    // 1-2. Дерево мода (кэш по версии) + лимиты
-    let version_str = version.clone().unwrap_or_default();
-    let files = get_mod_tree_cached(mod_id, &version_str).await?;
-    if files.is_empty() {
-        return util::fail_message("В дереве мода нет файлов".to_string());
-    }
-    let total: u64 = files.iter().map(|f| f.2).sum();
-    if total > ARIZONA_MOD_TOTAL_MAX {
-        return util::fail_message("Мод слишком большой".to_string());
-    }
-    for (rel, _, size, _) in &files {
-        validate_mod_rel_path(rel)?;
-        if *size > ARIZONA_MOD_MAX_FILE {
-            return util::fail_message("Файл мода слишком большой".to_string());
-        }
-    }
-
-    // 3. Скачивание с md5 + запись в папку игры; прогресс — событие
-    let emit = |stage: &str, done: usize, total_n: usize, bytes_done: u64, bytes_total: u64| {
-        let _ = app.emit(
-            "arizona-mod-progress",
-            serde_json::json!({
-                "modId": mod_id, "stage": stage,
-                "filesDone": done, "filesTotal": total_n,
-                "bytesDone": bytes_done, "bytesTotal": bytes_total,
-            }),
-        );
-    };
-    let bytes_total = total;
-    let mut bytes_done: u64 = 0;
-    let mut added: Vec<String> = Vec::new();
-    let mut replaced: Vec<String> = Vec::new();
-    let n = files.len();
-    for (i, (rel, hash, size, date_change)) in files.iter().enumerate() {
-        emit("dl", i, n, bytes_done, bytes_total);
-        let url_main = format!("https://pc.az-ins.com/resource/mods/{mod_id}/{}", f_encode_rel(rel));
-        let url_reserve = format!("https://arz-pc.react-group.tech/resource/mods/{mod_id}/{}", f_encode_rel(rel));
-        let body = download_mod_file(url_main, url_reserve, hash)
-            .await
-            .map_err(|e| format!("Файл «{rel}»: {e}"))?;
-        let dest = game_dir.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-        }
-        let existed = dest.exists();
-        std::fs::write(&dest, &body).map_err(|e| format!("write {}: {e}", dest.display()))?;
-        if existed {
-            replaced.push(rel.clone());
-        } else {
-            added.push(rel.clone());
-        }
-        // mtime = date_change из дерева (инкрементальные проверки дешевле)
-        if *date_change > 0 {
-            let _ = crate::game_update::downloader::set_mtime(&dest, *date_change);
-        }
-        bytes_done += *size;
-    }
-    emit("done", n, n, bytes_done, bytes_total);
-
-    // 4. Запись в конфиг: полное описание (версия/название — из меты каталога,
-    //    фронт передаёт их при вызове)
-    util::update_config(&state, |cfg| {
-        let mut obj = if cfg.installed_arizona_mods.is_object() {
-            cfg.installed_arizona_mods.clone()
-        } else {
-            serde_json::json!({})
-        };
-        obj[mod_id.to_string()] = serde_json::json!({
-            "version": version.unwrap_or_default(),
-            "title": title.unwrap_or_default(),
-            "files": added,
-            "replaced": replaced,
-        });
-        cfg.installed_arizona_mods = obj;
-        Ok(())
-    })?;
-    Ok(serde_json::json!({"success": true, "files": n, "bytes": bytes_total}))
-}
-
-/// Кодирование сегментов относительного пути для URL (пробелы и кириллица).
-fn f_encode_rel(rel: &str) -> String {
-    rel.split('/')
-        .map(|seg| seg.replace('%', "%25").replace(' ', "%20"))
-        .collect::<Vec<_>>()
-        .join("/")
+    util::fail_message("Каталог модов Arizona отключён. Каталог VEN-STATES будет подключён отдельно.")
 }
 
 /// Деинсталляция: удаляем ТОЛЬКО добавленные модом файлы; заменённые файлы
@@ -2279,79 +1758,16 @@ pub fn get_launcher_version(state: State<'_, AppState>) -> Result<serde_json::Va
     Ok(serde_json::json!({"success": true, "version": detect_launcher_version(&state)}))
 }
 
-/// Проверка обновления лаунчера (Python check_launcher_update): сравнивает
-/// состояние папки игры с требуемым и сообщает, нужна ли установка/апгрейд.
+/// VEN-STATES запускает GTA SA напрямую. Проверка версии стороннего Air-лаунчера
+/// отключена: она не должна блокировать запуск или показывать ложное обновление.
 #[tauri::command(async)]
-pub fn check_launcher_update(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let (game_path, launcher_path, launch_method) = {
-        let cfg = util::lock_config(&state)?;
-        (
-            cfg.game_path.clone(),
-            cfg.launcher_path.clone(),
-            cfg.launch_method.clone(),
-        )
-    };
-    // Нативный запуск не использует Air — установка/обновление не требуется.
-    // Раньше проверка была чисто файловой и показывала «Обновить» даже тем,
-    // кому Air не нужен.
-    if launch_method != "air" {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Нативный запуск — лаунчер Air не требуется",
-            "folder": serde_json::Value::Null
-        }));
-    }
-    if game_path.is_empty() || launcher_path.is_empty() {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Путь к игре не настроен", "folder": serde_json::Value::Null
-        }));
-    }
-    let Some(folder_path) = std::path::Path::new(&game_path)
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-    else {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Путь к игре не настроен", "folder": serde_json::Value::Null
-        }));
-    };
-    let info = match install_action_for_folder(&folder_path) {
-        Ok(v) => v,
-        Err(e) => return Ok(serde_json::json!({"success": false, "needs_update": false, "message": e})),
-    };
-    let action = info.get("action").and_then(|a| a.as_str()).unwrap_or("none");
-    if action == "none" {
-        return Ok(serde_json::json!({
-            "success": true, "needs_update": false,
-            "message": "Лаунчер v8 уже установлен", "folder": folder_path
-        }));
-    }
-    let launcher_version = info
-        .get("launcher_version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    let message = match action {
-        "choose_version" | "install_launcher_only" => "Требуется установка лаунчера v8",
-        "install_preloading_only" => "Требуется установка патчей",
-        "upgrade_to_v8" => return Ok(serde_json::json!({
-            "success": true, "needs_update": true,
-            "message": format!("Доступно обновление v{launcher_version} → v8"),
-            "folder": folder_path, "action": action
-        })),
-        // gta_sa.exe не найден — это не «обновление», а неверная папка
-        "error" => {
-            let m = info.get("message").and_then(|v| v.as_str()).unwrap_or("Папка игры не найдена");
-            return Ok(serde_json::json!({
-                "success": true, "needs_update": false,
-                "message": m, "folder": folder_path, "action": action
-            }));
-        }
-        _ => "Доступно обновление",
-    };
+pub fn check_launcher_update(_state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
-        "success": true, "needs_update": true,
-        "message": message, "folder": folder_path, "action": action
+        "success": true,
+        "needs_update": false,
+        "message": "VEN-STATES Launcher: отдельный Air-лаунчер не требуется",
+        "folder": serde_json::Value::Null,
+        "launcher": "VEN-STATES"
     }))
 }
 
@@ -2445,20 +1861,14 @@ fn install_action_for_folder(folder_path: &str) -> Result<serde_json::Value, Str
     }))
 }
 
-/// Команда для фронта: какое действие по установке требуется с учётом
-/// способа запуска. При нативном запуске лаунчер Air и preloading не нужны —
-/// всегда 'none', чтобы не пилить «Установить» без причины.
+/// Команда для фронта: VEN-STATES не требует установки стороннего Air-лаунчера.
 #[tauri::command(async)]
-pub fn get_install_action(state: State<'_, AppState>, folder_path: String) -> Result<serde_json::Value, String> {
-    let method = { util::lock_config(&state)?.launch_method.clone() };
-    if method != "air" {
-        return Ok(serde_json::json!({
-            "action": "none",
-            "message": "Нативный запуск — лаунчер Air не требуется",
-            "launch_method": "native"
-        }));
-    }
-    install_action_for_folder(&folder_path)
+pub fn get_install_action(_state: State<'_, AppState>, _folder_path: String) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "action": "none",
+        "message": "VEN-STATES запускает GTA SA напрямую; сторонний лаунчер не требуется",
+        "launch_method": "native"
+    }))
 }
 
 /// API-обёртка для JS: {success, install_info} (как в Python get_install_action_api)
@@ -3671,7 +3081,7 @@ pub fn set_plugin_enabled(state: State<'_, AppState>, enabled: bool) -> Result<s
 
 fn patches_download_url(version: &str) -> String {
     format!(
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches/arizonapatches_{}.zip",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/venstates_patches_{}.zip",
         version
     )
 }
@@ -3682,7 +3092,7 @@ fn patches_download_urls(version: &str) -> Vec<String> {
     vec![
         patches_download_url(version),
         format!(
-            "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches/arizonapatches_{}.zip",
+            "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/venstates_patches_{}.zip",
             version
         ),
     ]
@@ -4296,8 +3706,8 @@ pub async fn download_and_install_patches(
 pub async fn get_patches_latest_version() -> Result<serde_json::Value, String> {
     // Чтение patches/version.txt с GitHub (primary ArzLaunchRepo, fallback ArizonaLauncher)
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches/version.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches/version.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/version.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches/version.txt",
     ];
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
@@ -4389,7 +3799,7 @@ pub async fn check_patches_available(version: Option<String>) -> Result<serde_js
 #[tauri::command]
 pub async fn check_patches_update_status() -> Result<serde_json::Value, String> {
     // Python: манифест updates/patches.json на GitHub
-    let url = "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/updates/patches.json";
+    let url = "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/updates/patches.json";
     let resp = match util::http_request(
         reqwest::Method::GET,
         url,
@@ -4609,8 +4019,8 @@ pub fn install_patches_file(
 #[tauri::command]
 pub async fn fetch_patch_presets() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/configs.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/configs.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/configs.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/configs.txt",
     ];
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
@@ -4766,8 +4176,8 @@ pub async fn fetch_patches_schema(schema_url: Option<String>) -> Result<serde_js
             }
         }
     }
-    urls.push("https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/patches_schema.json".to_string());
-    urls.push("https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/patches_schema.json".to_string());
+    urls.push("https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches_schema.json".to_string());
+    urls.push("https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/patches_schema.json".to_string());
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
         let url = url.as_str();
@@ -4884,6 +4294,19 @@ fn game_update_limit(state: &AppState) -> u64 {
         // переполнение в debug паниковало бы всю команду
         n => n.max(1).saturating_mul(1_048_576),
     }
+}
+
+/// Собственные CDN VEN-STATES. Ключи хранятся в launcher_settings.extra,
+/// чтобы адреса загрузки можно было сменить без перекомпиляции лаунчера.
+fn ven_states_game_cdns(state: &AppState) -> (String, String) {
+    state.config.lock().ok().map(|cfg| {
+        let extra = &cfg.launcher_settings.extra;
+        let main = extra.get("ven_states_cdn_main")
+            .and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let reserve = extra.get("ven_states_cdn_reserve")
+            .and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        (main, reserve)
+    }).unwrap_or_default()
 }
 
 /// canonicalize без verbatim-префикса `\\?\` (и `\\?\UNC\`): canonicalize на
@@ -5004,12 +4427,24 @@ pub async fn check_update_api(
         .unwrap_or_else(|| util::game_path(&state));
     let target = resolve_game_target(&gp)
         .ok_or_else(|| "game_path не установлен".to_string())?;
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("Обновление Arizona RP через VEN-STATES Launcher запрещено. Выбери отдельную папку игры.");
+    }
     let documents = state.documents_path.clone();
+    let (cdn_main, cdn_reserve) = ven_states_game_cdns(&state);
+    if cdn_main.is_empty() {
+        return Ok(serde_json::json!({
+            "success": true,
+            "needs_update": false,
+            "updater_configured": false,
+            "message": "Обновления VEN-STATES пока не настроены. Arizona CDN отключён; кэш загрузок сохранён."
+        }));
+    }
 
     let job = Job {
         mode: Mode::Check,
-        cdn_main: engine::DEFAULT_CDN_MAIN.into(),
-        cdn_reserve: engine::DEFAULT_CDN_RESERVE.into(),
+        cdn_main,
+        cdn_reserve,
         target,
         // Вариант графики: ручной переключатель из настроек.
         future: game_update_future(&state),
@@ -5088,18 +4523,28 @@ fn spawn_game_job(
                 .ok_or_else(|| "game_path не установлен".to_string())?
         }
     };
+    if is_arizona_game_folder(&target) {
+        return util::fail_message("VEN-STATES не может изменять папку Arizona RP. Выбери отдельную папку игры.");
+    }
     if gta_process_running() {
         return Ok(serde_json::json!({
             "success": false,
             "message": "Игра запущена — закрой её перед установкой/обновлением"
         }));
     }
+    let (cdn_main, cdn_reserve) = ven_states_game_cdns(state);
+    if cdn_main.is_empty() {
+        return Ok(serde_json::json!({
+            "success": false,
+            "message": "CDN VEN-STATES не настроен. Укажи основной URL с game.json и папкой game/. Arizona CDN не используется."
+        }));
+    }
     let (cancel, pause) = claim_game_job(state)?;
 
     let job = Job {
         mode,
-        cdn_main: engine::DEFAULT_CDN_MAIN.into(),
-        cdn_reserve: engine::DEFAULT_CDN_RESERVE.into(),
+        cdn_main,
+        cdn_reserve,
         target: target.clone(),
         future,
         documents: state.documents_path.clone(),
@@ -5397,11 +4842,11 @@ pub fn game_update_status(state: State<'_, AppState>) -> Result<serde_json::Valu
 
 /// Архив лаунчера Air v8 (ZipCrypto, пароль `LAUNCHER_V8_ZIP_PASSWORD`).
 const LAUNCHER_V8_ZIP_URL: &str =
-    "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others/ArizonaLauncher8.0_byAIR.zip";
+    "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others/ven-states-client.zip";
 const LAUNCHER_V8_ZIP_PASSWORD: &[u8] = b"1111";
 /// Архив папки прелоадинга (без пароля, содержит `preloading_plugins/...`).
 const PRELOADING_ZIP_URL: &str =
-    "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others/preloading_plugins.zip";
+    "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others/preloading_plugins.zip";
 /// Максимум файлов в архиве (аналог `_MAX_ZIP_FILES` в Python).
 const MAX_ZIP_FILES: usize = 5000;
 
@@ -5811,64 +5256,19 @@ async fn launcher_install_run(
 
 #[tauri::command]
 pub async fn start_launcher_install(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    folder_path: String,
-    version: Option<String>,
-    install_type: Option<String>,
+    _app: tauri::AppHandle,
+    _state: State<'_, AppState>,
+    _folder_path: String,
+    _version: Option<String>,
+    _install_type: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let _job = match HeavyJobGuard::try_acquire(&state.heavy_job_busy) {
-        Ok(g) => g,
-        Err(e) => return util::fail_message(e),
-    };
-    let version = version.unwrap_or_else(|| "v8".to_string());
-    if version != "v8" {
-        return util::fail_message(format!("Поддерживается только версия v8 (получена: {version})"));
-    }
-    let install_type = install_type.unwrap_or_else(|| "choose_version".to_string());
-    const VALID_TYPES: [&str; 4] = [
-        "choose_version",
-        "install_launcher_only",
-        "install_preloading_only",
-        "upgrade_to_v8",
-    ];
-    if !VALID_TYPES.contains(&install_type.as_str()) {
-        return util::fail_message(format!("Установка не требуется (action: {install_type})"));
-    }
-
-    let folder = std::path::Path::new(&folder_path);
-    if !folder.is_dir() {
-        return util::fail_message("Папка игры не найдена");
-    }
-    // Папка обязана быть папкой игры: без gta_sa.exe ставить лаунчер некуда.
-    // Раньше action "error" от install_action_for_folder не прерывал установку
-    // (abort только на "none") — веб-вызов мог развернуть архив в любую папку.
-    if !folder.join("gta_sa.exe").exists() {
-        return util::fail_message("gta_sa.exe не найден — укажите папку с игрой");
-    }
-    // Дополнительная проверка: нужная версия уже стоит — не качаем
-    // (чисто файловая проверка: установку вызывают явно, метод не важен)
-    if let Ok(info) = install_action_for_folder(&folder_path) {
-        if info["action"] == "none" {
-            let msg = info["message"].as_str().unwrap_or("Лаунчер уже установлен");
-            return util::fail_message(msg);
-        }
-    }
-
-    log::info!("start_launcher_install: folder={folder_path} version={version} type={install_type}");
-    match launcher_install_run(&app, &state, &folder_path, &install_type).await {
-        Ok(()) => {
-            emit_install_progress(&app, "done", 100, "Установка завершена");
-            log::info!("start_launcher_install: УСТАНОВКА ЗАВЕРШЕНА УСПЕШНО ({folder_path})");
-            util::ok_true()
-        }
-        Err(e) => {
-            log::error!("start_launcher_install: {e}");
-            emit_install_progress(&app, "error", 0, &e);
-            util::fail_message(e)
-        }
-    }
+    Ok(serde_json::json!({
+        "success": false,
+        "message": "Установка Arizona Air отключена. VEN-STATES использует прямой запуск GTA SA."
+    }))
 }
+
+// ==================== Moonloader ====================
 
 // ==================== Moonloader ====================
 
@@ -6110,11 +5510,11 @@ fn safe_script_filename(name: &str) -> Result<String, String> {
 #[tauri::command]
 pub async fn fetch_moonloader_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/Lua/lua.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/Lua/lua.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/Lua/lua.txt",
         // Fallback из v1 (старый репо, теперь под halfik24)
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/moonloader.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/moonloader.txt",
     ];
     let mut last_err = String::new();
     for url in urls {
@@ -6267,11 +5667,11 @@ pub fn install_lua_file(
 #[tauri::command]
 pub async fn fetch_libraries_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/libraries.txt",
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/refs/heads/main/libraries.txt",
-        "https://github.com/halfik24/ArzLaunchRepo/raw/main/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
         // Fallback из v1
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/libraries.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/libraries.txt",
     ];
     let mut last_err = String::new();
     for url in urls {
@@ -6693,8 +6093,8 @@ fn resolve_dest_no_create(state: &AppState, destination: &str) -> Result<PathBuf
 #[tauri::command]
 pub async fn fetch_others_catalog() -> Result<serde_json::Value, String> {
     let urls = [
-        "https://raw.githubusercontent.com/halfik24/ArzLaunchRepo/main/others.txt",
-        "https://raw.githubusercontent.com/halfik24/ArizonaLauncher/main/others.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others.txt",
+        "https://raw.githubusercontent.com/vendatelogames/ArizonaLauncher/main/ven-states/others.txt",
     ];
     let mut last_err = "Неизвестная ошибка".to_string();
     for url in urls {
@@ -6840,7 +6240,7 @@ pub fn check_tray_support(app: tauri::AppHandle) -> Result<serde_json::Value, St
 
 #[tauri::command]
 pub fn open_telegram_share() -> Result<serde_json::Value, String> {
-    open::that("https://t.me/halfik24").map_err(|e| e.to_string())?;
+    open::that("https://t.me/vendatelostudios").map_err(|e| e.to_string())?;
     util::ok_true()
 }
 
@@ -7565,21 +6965,11 @@ mod auto_cdn_news_tests {
     use super::*;
 
     #[test]
-    fn pick_cdn_index_prefers_main_and_falls_back() {
-        assert_eq!(pick_cdn_index(true, true), "0");
-        assert_eq!(pick_cdn_index(true, false), "0");
-        // main мёртв, reserve жив — берём reserve
-        assert_eq!(pick_cdn_index(false, true), "1");
-        // оба мертвы — фоллбэк на main (как в оригинале)
-        assert_eq!(pick_cdn_index(false, false), "0");
-    }
-
-    #[test]
     fn parse_arizona_projects_extracts_news() {
         let body = serde_json::json!([
             {"gameId": "rodina", "news": [{"title": "r", "imageUrl": "i", "url": "u"}]},
             {"gameId": "arizona", "news": [
-                {"title": "T1", "imageUrl": "img1", "url": "https://arizona-rp.com/posts/6"},
+                {"title": "T1", "imageUrl": "img1", "url": "https://example.invalid/posts/6"},
                 {"title": "Без ссылки", "imageUrl": "", "url": ""}
             ]}
         ]);
@@ -7587,7 +6977,7 @@ mod auto_cdn_news_tests {
         assert_eq!(news.len(), 1, "без url записи отбрасываются");
         assert_eq!(news[0]["title"], "T1");
         assert_eq!(news[0]["image_url"], "img1");
-        assert_eq!(news[0]["url"], "https://arizona-rp.com/posts/6");
+        assert_eq!(news[0]["url"], "https://example.invalid/posts/6");
         let body2 = serde_json::json!([{"gameId": "rodina"}]);
         assert!(parse_arizona_projects(&body2).is_none());
     }

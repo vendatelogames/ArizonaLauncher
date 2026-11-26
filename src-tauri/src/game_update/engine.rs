@@ -104,9 +104,10 @@ pub enum Event {
     },
 }
 
-/// CDN по умолчанию — таблица MAP_GAME_TO_CDN_URLS оригинала, игра `arizona`.
-pub const DEFAULT_CDN_MAIN: &str = "https://pc.az-ins.com/release";
-pub const DEFAULT_CDN_RESERVE: &str = "https://arz-pc.react-group.tech/release";
+/// Адреса игровых файлов задаются отдельно в настройках VEN-STATES.
+/// Пустые значения намеренно не ведут к серверам Arizona.
+pub const DEFAULT_CDN_MAIN: &str = "";
+pub const DEFAULT_CDN_RESERVE: &str = "";
 
 /// Запас сверх суммы размеров: мета-операции + temp-файлы.
 const FREE_SPACE_MARGIN: u64 = 268_435_456; // 256 MB
