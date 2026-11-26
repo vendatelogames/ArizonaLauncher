@@ -2,7 +2,7 @@
 
 Standalone Windows launcher for **VEN-STATES RP** built with Rust and Tauri 2.
 
-**Game server:** `188.127.241.74:3302`
+**Game server:** `188.127.241.74:3699`
 
 ## Current direction
 
