@@ -38,6 +38,10 @@ fn get_config_impl(state: &AppState) -> Result<serde_json::Value, String> {
     // он не используется, а при Air его отсутствие покажет кнопка «Установить».
     let paths_ok = !game_path.is_empty()
         && std::path::Path::new(&game_path).exists();
+    let protected_install = std::path::Path::new(&game_path)
+        .parent()
+        .map(is_arizona_game_folder)
+        .unwrap_or(false);
     // Гвард уже отпущен — вложенный lock() внутри безопасен.
     let launcher_version = detect_launcher_version(state);
     Ok(serde_json::json!({
@@ -47,24 +51,29 @@ fn get_config_impl(state: &AppState) -> Result<serde_json::Value, String> {
         "last_server": last_server,
         "launch_params": launch_params,
         "paths_configured": paths_ok,
-        // Реальная версия из папки игры (как get_launcher_version), а не
-        // константа "v8"
+        "protected_install": protected_install,
         "launcher_version": launcher_version
     }))
 }
 
 #[tauri::command]
 pub fn get_saved_data(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let cfg = util::lock_config(&state)?;
-    // Достаточно папки игры: лаунчер Air не обязателен — при нативном запуске
-    // он не используется, а при Air его отсутствие покажет кнопка «Установить».
-    let paths_ok = !cfg.game_path.is_empty();
+    let (nickname, server, game_path) = {
+        let cfg = util::lock_config(&state)?;
+        (cfg.last_nickname.clone(), cfg.last_server, cfg.game_path.clone())
+    };
+    let paths_ok = !game_path.is_empty() && std::path::Path::new(&game_path).exists();
+    let protected_install = std::path::Path::new(&game_path)
+        .parent()
+        .map(is_arizona_game_folder)
+        .unwrap_or(false);
     Ok(serde_json::json!({
         "success": true,
-        "nickname": cfg.last_nickname,
-        "server": cfg.last_server,
-        "game_path": cfg.game_path,
-        "paths_configured": paths_ok
+        "nickname": nickname,
+        "server": server,
+        "game_path": game_path,
+        "paths_configured": paths_ok,
+        "protected_install": protected_install
     }))
 }
 
@@ -80,7 +89,11 @@ pub fn get_init_data(state: State<'_, AppState>) -> Result<serde_json::Value, St
             "nickname": cfg.last_nickname,
             "server": cfg.last_server,
             "game_path": cfg.game_path,
-            "paths_configured": paths_ok
+            "paths_configured": paths_ok,
+            "protected_install": std::path::Path::new(&cfg.game_path)
+                .parent()
+                .map(is_arizona_game_folder)
+                .unwrap_or(false)
         }
     }))
 }
