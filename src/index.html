@@ -9576,6 +9576,11 @@
                 <div class="folder-modal-title" id="folderModalTitle">Управление папками</div>
                 <button class="close-btn" onclick="closeFolderModal()" aria-label="Закрыть">×</button>
             </div>
+            <div class="folder-current" style="margin:12px 14px 14px;padding:13px 14px;border:1px solid rgba(255,255,255,.09);border-radius:11px;background:rgba(255,255,255,.035);">
+                <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.48);margin-bottom:7px;">Текущая папка игры</div>
+                <div id="folderCurrentPath" style="font-size:11px;line-height:1.5;color:rgba(255,255,255,.88);overflow-wrap:anywhere;">Путь ещё не выбран</div>
+                <div id="folderCurrentStatus" style="margin-top:7px;font-size:10px;line-height:1.45;color:rgba(255,255,255,.48);">Выбери папку, в которой находится gta_sa.exe</div>
+            </div>
             <button class="folder-option-btn" onclick="setGamePath()">
                 <i data-lucide="folder-open"></i> Указать путь к игре
             </button>
@@ -12290,8 +12295,36 @@
         }
 
         // Модальное окно папки
+        async function refreshGamePathDisplay(pendingFolder = '') {
+            const pathEl = document.getElementById('folderCurrentPath');
+            const statusEl = document.getElementById('folderCurrentStatus');
+            if (!pathEl || !statusEl) return;
+            try {
+                const saved = window.pywebview?.api?.get_saved_data
+                    ? await window.pywebview.api.get_saved_data()
+                    : null;
+                if (saved && saved.success && saved.game_path) {
+                    pathEl.textContent = saved.game_path;
+                    statusEl.textContent = 'GTA San Andreas найден. Папка сохранена и готова к запуску.';
+                    return;
+                }
+                const target = pendingFolder || _installFolder || '';
+                if (target) {
+                    pathEl.textContent = target;
+                    statusEl.textContent = 'Папка выбрана как целевое место. Игровые файлы появятся после подключения собственного CDN VEN-STATES.';
+                } else {
+                    pathEl.textContent = 'Путь ещё не выбран';
+                    statusEl.textContent = 'Выбери папку, в которой находится gta_sa.exe';
+                }
+            } catch (e) {
+                pathEl.textContent = pendingFolder || _installFolder || 'Путь ещё не выбран';
+                statusEl.textContent = 'Не удалось прочитать сохранённый путь.';
+            }
+        }
+
         function openFolderModal() {
             folderModal.style.display = 'flex';
+            refreshGamePathDisplay();
         }
 
         function closeFolderModal() {
@@ -15059,7 +15092,9 @@
                     if (result.success) {
                         closeFolderModal();
                         // Обновляем все элементы, связанные с установленной игрой.
+                        _installFolder = result.folder || '';
                         await loadSavedData();
+                        await refreshGamePathDisplay();
                         refreshAirInstallSection();
                         if (result.protected_install) {
                             showNotification('Папка выбрана. Существующие файлы защищены: VEN-STATES не будет обновлять или перезаписывать их.', 'success');
@@ -15069,6 +15104,7 @@
                     } else if (result.code === 'EMPTY_FOLDER' && result.folder) {
                         closeFolderModal();
                         _installFolder = result.folder;
+                        await refreshGamePathDisplay(result.folder);
                         showNotification('Папка выбрана как место установки: ' + result.folder + '. Скачивание станет доступно после подключения файлов VEN-STATES.', 'info');
                     } else if (result.needs_install) {
                         // Нужна установка — показываем модал
