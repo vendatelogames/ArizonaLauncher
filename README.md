@@ -1,54 +1,74 @@
-# VEN-STATES Launcher
+# VEN-STATES RP Launcher
 
-Standalone Windows launcher for **VEN-STATES RP** built with Rust and Tauri 2.
+Полнофункциональный Windows-лаунчер **VEN-STATES RP** на Rust + Tauri 2.
 
-**Game server:** `188.127.241.74:3699`
+**Игровой сервер:** `188.127.241.74:3699`
 
-## Current direction
+## Возможности интерфейса
 
-- Launches the user's existing GTA San Andreas installation directly.
-- Uses standard SA-MP 0.3.7 connection arguments; no Arizona Air client is required.
-- Does not perform Arizona launcher-version checks.
-- Keeps the existing download engine: resumable `.part` files, MD5 verification, fallback mirror support, and the hash cache.
-- Game updates are routed only through VEN-STATES-owned CDN settings. No Arizona CDN fallback is configured.
-- Automatically detects common GTA San Andreas installation locations and also supports manual folder selection.
+- Главная панель с никнеймом, сервером и анимированным запуском.
+- Сохранение никнейма и профилей.
+- Расширенные настройки окна, графики и запуска.
+- Обои, темы, эффекты интерфейса и настройка внешнего вида.
+- Управление пользовательскими Lua/MoonLoader-скриптами и библиотеками.
+- Импорт/экспорт настроек, резервные копии и просмотр логов.
+- Уведомления, статус игры, прогресс задач, сворачивание в трей.
+- Новости проекта и серверная информация VEN-STATES.
 
-## Game updater setup
+Интерфейс основан на прежней полнофункциональной версии и адаптируется под VEN-STATES; он не заменён упрощённой страницей с одной кнопкой.
 
-The updater engine expects an HTTPS base URL that serves:
+## Запуск GTA SA / выбор папки
 
-- `game.json` — a JSON manifest with a `data` array.
-- `game/<relative-path>` — the files referenced by the manifest.
+Лаунчер запускает `gta_sa.exe` напрямую с параметрами SA-MP 0.3.7. Внешний Arizona Air launcher не требуется.
 
-Configure the optional values in `launcher_settings.extra`:
+Ручной выбор поддерживает расположения:
+
+- `<выбранная папка>/gta_sa.exe`
+- `<выбранная папка>/bin/gta_sa.exe`
+- `<выбранная папка>/bin/arizona/gta_sa.exe`
+
+Можно вручную выбрать и уже существующую папку GTA SA внутри старой установки Arizona RP. Она будет помечена как защищённая: VEN-STATES может использовать находящийся там GTA SA для запуска, но не будет загружать, заменять, удалять или чинить файлы в этой папке. Автоматический поиск не выбирает Arizona-установки.
+
+Пустая папка тоже распознаётся как выбранное место будущей установки. Однако игровой клиент появится в ней только после публикации собственных файлов VEN-STATES и настройки CDN.
+
+## Собственный игровой CDN
+
+Движок обновления сохранён: поддерживаются возобновление `.part`, контроль MD5, зеркала, пауза и отмена.
+
+Для его включения необходим собственный HTTPS-хост, содержащий:
+
+- `game.json` — манифест с массивом `data`.
+- `game/<relative-path>` — файлы, описанные манифестом.
+
+В `launcher_settings.extra` используются ключи:
 
 - `ven_states_cdn_main`
-- `ven_states_cdn_reserve`
+- `ven_states_cdn_reserve` — резервное зеркало (необязательно).
 
-Until VEN-STATES publishes its own manifest and client files, automatic game installation/update remains inactive. Existing cache and download-resume logic are retained.
+Пока манифест и файлы VEN-STATES не опубликованы, установка, обновление и починка игрового клиента выключены. CDN Arizona не используется. Это защищает существующий кэш и не позволяет случайно скачать чужую сборку.
 
-See [VEN-STATES asset setup](ven-states/README.md).
+Подробности формата: [VEN-STATES asset setup](ven-states/README.md).
 
-## Build
+## Сборка Windows
 
-Requirements: Windows 10/11 x64, Rust stable, Node.js 20+, and Microsoft C++ Build Tools.
+Требования: Windows 10/11 x64, Rust stable, Node.js 20+ и Microsoft C++ Build Tools.
 
-```bash
+```powershell
 npm ci
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
 
-The Windows NSIS installer is produced under:
+NSIS-установщик появится в:
 
 `src-tauri/target/release/bundle/nsis/`
 
-GitHub Actions runs the Rust tests and Windows installer build for pushes to `main`, `ven-states/**`, and pull requests to `main`.
+GitHub Actions запускает Rust-тесты и сборку Windows для push и pull request.
 
-## Project status
+## Статус
 
-This repository is being separated from the original Arizona launcher codebase. The core launch path and version gate have been detached; optional catalog and patch features are being migrated to VEN-STATES-owned assets.
+Работа по отделению VEN-STATES от исходного проекта продолжается. Каталоги и некоторые специфичные модули ещё требуют перевода на собственные ресурсы VENDATELO. Не все элементы интерфейса следует считать готовыми к использованию, пока их источники данных не переключены на VEN-STATES.
 
-## License
+## Лицензия и происхождение
 
-GPL-3.0. See [LICENSE](LICENSE).
+Проект основан на форке ArizonaLauncher от halfik24. Лицензия — GPL-3.0; требования лицензии и сведения об исходной основе сохранены. См. [LICENSE](LICENSE).
